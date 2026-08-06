@@ -164,10 +164,20 @@ ptb.add_handler(CallbackQueryHandler(send_file_to_user, pattern='^getfile_'))
 ptb.add_handler(CallbackQueryHandler(start_menu, pattern='^btn_main$'))
 ptb.add_handler(CommandHandler("start", start_menu))
 
+@app.get("/{full_path:path}")
+def root(full_path: str):
+    return {"status": "active", "message": "Bot Server is UP!"}
+
 @app.post("/api/webhook")
+@app.post("/api/main")
+@app.post("/{full_path:path}")
 async def process_update(request: Request):
     try:
-        if not ptb._initialized: await ptb.initialize()
-        await ptb.process_update(Update.de_json(await request.json(), ptb.bot))
+        if not ptb._initialized: 
+            await ptb.initialize()
+        data = await request.json()
+        await ptb.process_update(Update.de_json(data, ptb.bot))
         return {"status": "ok"}
-    except Exception as e: return {"status": "error"}
+    except Exception as e: 
+        logging.error(f"Webhook Error: {e}")
+        return {"status": "error"}

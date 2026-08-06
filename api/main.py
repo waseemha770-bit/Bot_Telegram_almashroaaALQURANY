@@ -11,23 +11,20 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 logging.basicConfig(level=logging.INFO)
 app = FastAPI()
 
-# المتغيرات البيئية من Vercel
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GAS_WEB_APP_URL = os.environ.get("GAS_WEB_APP_URL")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
 OWNER_ID = str(os.environ.get("ADMIN_ID", "")) 
 TIME_LIMIT = 30
 
-# الأزرار السفلية بهوية المشروع القرآني
 USER_KB = ReplyKeyboardMarkup([
-    ["📝 اختبار الثقافة القرآنية", "📚 مكتبة الملازم والدروس"], 
+    ["📚 مكتبة الملازم والدروس", "📝 اختبار الثقافة القرآنية"], 
     ["🏆 لوحة الشرف", "📊 رصيدي الحالي"]
 ], resize_keyboard=True)
 
 ADMIN_KB = ReplyKeyboardMarkup([
-    ["📝 اختبار الثقافة القرآنية", "📚 مكتبة الملازم والدروس"], 
-    ["📤 إضافة ملزمة/درس", "📈 إحصائيات التفاعل"], 
-    ["🏆 لوحة الشرف", "📊 رصيدي الحالي"]
+    ["📚 مكتبة الملازم والدروس", "📝 اختبار الثقافة القرآنية"], 
+    ["📈 إحصائيات التفاعل", "🏆 لوحة الشرف"]
 ], resize_keyboard=True)
 
 def api_request(action, **kwargs):
@@ -40,8 +37,8 @@ def api_request(action, **kwargs):
         return {"status": "error"}
 
 async def get_keyboard(user_id):
-    if str(user_id) == OWNER_ID: return ADMIN_KB
-    if api_request("check_admin", user_id=user_id).get("is_admin"): return ADMIN_KB
+    if str(user_id) == OWNER_ID or api_request("check_admin", user_id=user_id).get("is_admin"): 
+        return ADMIN_KB
     return USER_KB
 
 def get_rank(score):
@@ -51,12 +48,12 @@ def get_rank(score):
     return "نبراس قرآني 🔥"
 
 # ==========================================
-# 1. نظام رفع الملازم والدروس للمشرفين
+# 1. نظام الرفع والتنظيم (للمشرفين)
 # ==========================================
 async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
-    if await get_keyboard(user_id) == USER_KB: return # حماية
+    if await get_keyboard(user_id) == USER_KB: return
 
     msg = update.message
     file_id = msg.document.file_id if msg.document else msg.video.file_id if msg.video else msg.audio.file_id if msg.audio else msg.photo[-1].file_id if msg.photo else None
@@ -64,48 +61,35 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     if not file_id: return
 
-    # إرسال نسخة لقناة التخزين
     if CHANNEL_ID:
         await context.bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=chat_id, message_id=msg.message_id)
 
-    # حفظ حالة المشرف
-    api_request("set_state", user_id=user_id, state="WAITING_TITLE", temp_data={"file_id": file_id, "type": media_type})
-    await msg.reply_text("📥 **تم استلام الملف في مستودع المشروع القرآني!**\n\n✏️ أرسل الآن **عنوان الملزمة أو الدرس** في رسالة نصية:", parse_mode="Markdown")
+    api_request("set_state", user_id=user_id, state="WAIT_CAT", temp_data={"file_id": file_id, "type": media_type})
+    await msg.reply_text("📥 **تم الاستلام!**\n\n📁 ما هو **القسم** الذي ينتمي إليه هذا المحتوى؟\n*(مثال: سلسلة معرفة الله، دروس رمضان...)*", parse_mode="Markdown")
 
-# ==========================================
-# 2. معالجة النصوص (التصفح وإدارة الحالات)
-# ==========================================
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
     kb = await get_keyboard(user_id)
 
-    # فحص إذا كان المشرف يكمل عملية رفع ملف
     state_res = api_request("get_state", user_id=user_id)
     state = state_res.get("state")
     temp_data = state_res.get("temp_data", {})
 
-    if state == "WAITING_TITLE":
-        temp_data["title"] = text
-        api_request("set_state", user_id=user_id, state="WAITING_CATEGORY", temp_data=temp_data)
-        return await update.message.reply_text("✅ ممتاز! أرسل الآن **القسم أو التصنيف**\n*(مثال: سلسلة معرفة الله، دروس رمضان، ثقافة قرآنية...):*", parse_mode="Markdown")
+    if state == "WAIT_CAT":
+        temp_data["category"] = text
+        api_request("set_state", user_id=user_id, state="WAIT_LES", temp_data=temp_data)
+        return await update.message.reply_text("✅ ممتاز! أرسل الآن **اسم الدرس** ليتم ربط المحتوى به:\n*(مثال: الدرس الأول)*", parse_mode="Markdown")
 
-    if state == "WAITING_CATEGORY":
-        api_request("add_media", title=temp_data["title"], media_type=temp_data["type"], file_id=temp_data["file_id"], category=text)
+    if state == "WAIT_LES":
+        api_request("add_media", category=temp_data["category"], lesson=text, media_type=temp_data["type"], file_id=temp_data["file_id"])
         api_request("set_state", user_id=user_id, state="", temp_data={})
-        return await update.message.reply_text(f"🎉 تم حفظ المحتوى بنجاح في قسم: {text}", parse_mode="Markdown")
+        return await update.message.reply_text(f"🎉 تم دمج المحتوى بنجاح!\nالقسم: {temp_data['category']}\nالدرس: {text}", parse_mode="Markdown")
 
-    # الأوامر العامة للمشروع القرآني
     if text in ['/start']:
         api_request("register_user", user_id=user_id, name=update.effective_user.first_name)
-        welcome_msg = (
-            "بسم الله الرحمن الرحيم\n\n"
-            "أهلاً بك في **منصة المشروع القرآني** 📖\n"
-            "هنا يمكنك تصفح ملازم الشهيد القائد، والاستماع للدروس، واختبار معلوماتك في الثقافة القرآنية.\n\n"
-            "اختر ما تود القيام به من القائمة بالأسفل 👇"
-        )
-        return await update.message.reply_text(welcome_msg, parse_mode="Markdown", reply_markup=kb)
+        return await update.message.reply_text("بسم الله الرحمن الرحيم\nأهلاً بك في **منصة المشروع القرآني** 📖\nاختر من القائمة بالأسفل 👇", parse_mode="Markdown", reply_markup=kb)
 
     if text in ['/score', '📊 رصيدي الحالي']:
         score = api_request("get_user", user_id=user_id).get("score", 0)
@@ -113,8 +97,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == '📚 مكتبة الملازم والدروس':
         cats = api_request("get_library").get("categories", [])
-        if not cats: return await update.message.reply_text("المكتبة قيد التجهيز حالياً.", reply_markup=kb)
-        btns = [[InlineKeyboardButton(f"📁 {c}", callback_data=f"libcat_{c}")] for c in cats]
+        if not cats: return await update.message.reply_text("المكتبة قيد التجهيز.", reply_markup=kb)
+        # نرسل اسم القسم مباشرة في الـ callback
+        btns = [[InlineKeyboardButton(f"📁 {c}", callback_data=f"cat_{c[:50]}")] for c in cats]
         return await update.message.reply_text("📚 **أقسام المشروع القرآني:**\nاختر القسم المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
         
     if text == '📝 اختبار الثقافة القرآنية':
@@ -123,7 +108,110 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("نرجو اختيار أحد الخيارات من القائمة السفلية.", reply_markup=kb)
 
 # ==========================================
-# 3. إرسال أسئلة الثقافة القرآنية
+# 2. واجهة تصفح الدروس المترابطة (Callbacks)
+# ==========================================
+async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    chat_id, user_id = query.message.chat_id, str(query.from_user.id)
+
+    if data == "ignore": return await query.answer("مغلق")
+
+    # 1. عرض الدروس داخل القسم
+    if data.startswith("cat_"):
+        cat_name = data.replace("cat_", "")
+        lib_data = api_request("get_library")
+        lessons = lib_data.get("lessons", {}).get(cat_name, {})
+        
+        if not lessons: return await query.answer("لا توجد دروس هنا بعد.", show_alert=True)
+        
+        btns = [[InlineKeyboardButton(f"📖 {les_name}", callback_data=f"les_{les_id}")] for les_name, les_id in lessons.items()]
+        return await query.edit_message_text(f"📁 **{cat_name}**\nاختر الدرس:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+
+    # 2. عرض لوحة تحكم الدرس (مترابطة)
+    if data.startswith("les_"):
+        les_id = data.replace("les_", "")
+        lib_data = api_request("get_library")
+        lesson_data = lib_data.get("media", {}).get(les_id)
+        
+        if not lesson_data: return await query.answer("عذراً، الدرس غير متاح.", show_alert=True)
+        
+        title = lesson_data['title']
+        cat = lesson_data['category']
+        files = lesson_data['files'] # { "فيديو": "file_id", "مقطع صوتي": "file_id", ... }
+        
+        btns = []
+        row = []
+        
+        # إنشاء أزرار للمحتويات المتوفرة فقط في هذا الدرس
+        icons = {"فيديو": "🎥", "مقطع صوتي": "🎧", "ملزمة/مستند": "📚", "صورة": "🖼️"}
+        for f_type, f_id in files.items():
+            icon = icons.get(f_type, "📁")
+            btn = InlineKeyboardButton(f"{icon} {f_type}", callback_data=f"send_{les_id}_{f_type}")
+            row.append(btn)
+            if len(row) == 2:
+                btns.append(row)
+                row = []
+        if row: btns.append(row)
+        
+        # ربط الاختبارات بهذا الدرس المخصص
+        # في الإكسل، يجب أن يكون اسم (المجموعة/القسم) هو نفس اسم الدرس لكي تظهر أسئلته
+        btns.append([InlineKeyboardButton("📝 اختبر مدى استيعابك للدرس", callback_data=f"quiz_{title[:50]}")])
+        btns.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"cat_{cat[:50]}")])
+        
+        txt = f"📖 **{title}**\n📁 القسم: {cat}\n\n👇 اختر المحتوى الذي تريد عرضه:"
+        return await query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+
+    # 3. إرسال المحتوى المطلوب للدرس
+    if data.startswith("send_"):
+        parts = data.split("_")
+        les_id = parts[1]
+        f_type = parts[2]
+        
+        lesson_data = api_request("get_library").get("media", {}).get(les_id)
+        if not lesson_data: return await query.answer("عذراً، الملف غير متاح.")
+        
+        f_id = lesson_data['files'].get(f_type)
+        title = lesson_data['title']
+        
+        await query.answer("⏳ جاري إرسال المحتوى...")
+        caption = f"📖 **{title}**\n({f_type})"
+        
+        if f_type == "فيديو": await context.bot.send_video(chat_id, f_id, caption=caption, parse_mode="Markdown")
+        elif f_type == "مقطع صوتي": await context.bot.send_audio(chat_id, f_id, caption=caption, parse_mode="Markdown")
+        elif f_type == "صورة": await context.bot.send_photo(chat_id, f_id, caption=caption, parse_mode="Markdown")
+        else: await context.bot.send_document(chat_id, f_id, caption=caption, parse_mode="Markdown")
+        return
+
+    # 4. تشغيل الاختبار
+    if data.startswith("quiz_"):
+        cat_name = data.replace("quiz_", "")
+        await query.answer("🚀 جاري تجهيز الاختبار...")
+        return await send_question(context, chat_id, cat_name, user_id)
+
+    # 5. معالجة الإجابات (تمت المحافظة عليها كما هي)
+    if data.startswith("ans_"):
+        parts = data.split("_")
+        is_correct = parts[1] == "1"
+        q_id, ts, is_gold, cat = parts[2], int(parts[3]), parts[4] == "1", parts[5]
+        diff = int(time.time()) - ts
+        
+        if diff > TIME_LIMIT: return await query.edit_message_text("⏳ *انتهى الوقت المخصص للإجابة!*", parse_mode="Markdown")
+        
+        pts = 10 if is_correct else 0
+        if is_correct and diff <= 5: pts += 5
+        if is_correct and is_gold: pts *= 2
+        
+        api_request("submit_answer", user_id=user_id, q_id=q_id, is_correct=is_correct, points=pts, category=cat)
+        msg = f"✅ إجابة موفقة! (+{pts})" if is_correct else "❌ إجابة غير صحيحة!"
+        await query.answer(msg, show_alert=True)
+        
+        new_kb = [[InlineKeyboardButton(("✅ " if b.callback_data == data and is_correct else "❌ " if b.callback_data == data else "") + b.text, callback_data="ignore")] for row in query.message.reply_markup.inline_keyboard for b in row]
+        new_kb.append([InlineKeyboardButton("⏭️ السؤال التالي", callback_data=f"quiz_{cat}")])
+        await query.edit_message_reply_markup(InlineKeyboardMarkup(new_kb))
+
+# ==========================================
+# 3. دالة إرسال الأسئلة
 # ==========================================
 async def send_question(context, chat_id, category, user_id=None, msg_id=None):
     res = api_request("get_question", category=category, user_id=user_id)
@@ -145,60 +233,7 @@ async def send_question(context, chat_id, category, user_id=None, msg_id=None):
     else: await context.bot.send_message(chat_id, txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_kb))
 
 # ==========================================
-# 4. التفاعل مع الأزرار الشفافة
-# ==========================================
-async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-    chat_id, user_id = query.message.chat_id, str(query.from_user.id)
-
-    if data == "ignore": return await query.answer("مغلق")
-
-    if data.startswith("libcat_"):
-        cat = data.replace("libcat_", "")
-        items = api_request("get_library", category=cat).get("items", [])
-        btns = [[InlineKeyboardButton(f"📖 {i['title']}", callback_data=f"media_{i['id']}")] for i in items]
-        return await query.edit_message_text(f"📁 **{cat}**\nاختر الملزمة أو الدرس:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
-
-    if data.startswith("media_"):
-        m_id = data.replace("media_", "")
-        item = next((x for x in api_request("get_library").get("items", []) if x["id"] == m_id), None)
-        if item:
-            test_btn = InlineKeyboardMarkup([[InlineKeyboardButton("📝 اختبر مدى استيعابك للدرس", callback_data=f"quiz_{item['category']}")]])
-            await query.message.delete()
-            cap = f"📖 **{item['title']}**\n📁 القسم: {item['category']}\n\nبعد الانتهاء من الاطلاع، يمكنك تقييم استيعابك 👇"
-            if item["type"] == "فيديو": await context.bot.send_video(chat_id, item["file_id"], caption=cap, reply_markup=test_btn, parse_mode="Markdown")
-            elif item["type"] == "مقطع صوتي": await context.bot.send_audio(chat_id, item["file_id"], caption=cap, reply_markup=test_btn, parse_mode="Markdown")
-            else: await context.bot.send_document(chat_id, item["file_id"], caption=cap, reply_markup=test_btn, parse_mode="Markdown")
-        return
-
-    if data.startswith("quiz_"):
-        await query.answer("🚀 جاري تجهيز الاختبار...")
-        return await send_question(context, chat_id, data.replace("quiz_", ""), user_id)
-
-    if data.startswith("ans_"):
-        parts = data.split("_")
-        is_correct = parts[1] == "1"
-        q_id, ts, is_gold, cat = parts[2], int(parts[3]), parts[4] == "1", parts[5]
-        diff = int(time.time()) - ts
-        
-        if diff > TIME_LIMIT: return await query.edit_message_text("⏳ *انتهى الوقت المخصص للإجابة!*", parse_mode="Markdown")
-        
-        pts = 10 if is_correct else 0
-        if is_correct and diff <= 5: pts += 5
-        if is_correct and is_gold: pts *= 2
-        
-        api_request("submit_answer", user_id=user_id, q_id=q_id, is_correct=is_correct, points=pts, category=cat)
-        
-        msg = f"✅ إجابة موفقة! (+{pts})" if is_correct else "❌ إجابة غير صحيحة!"
-        await query.answer(msg, show_alert=True)
-        
-        new_kb = [[InlineKeyboardButton(("✅ " if b.callback_data == data and is_correct else "❌ " if b.callback_data == data else "") + b.text, callback_data="ignore")] for row in query.message.reply_markup.inline_keyboard for b in row]
-        new_kb.append([InlineKeyboardButton("⏭️ السؤال التالي", callback_data=f"quiz_{cat}")])
-        await query.edit_message_reply_markup(InlineKeyboardMarkup(new_kb))
-
-# ==========================================
-# 5. تشغيل السيرفر (FastAPI)
+# 4. تشغيل السيرفر (FastAPI)
 # ==========================================
 ptb = Application.builder().token(BOT_TOKEN).build()
 ptb.add_handler(CommandHandler("start", handle_messages))

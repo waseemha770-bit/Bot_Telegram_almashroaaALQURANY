@@ -1,0 +1,191 @@
+import os
+import json
+import logging
+import requests
+import pandas as pd
+from io import BytesIO
+from fastapi import FastAPI, Request
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, 
+    MessageHandler, filters, ContextTypes, ConversationHandler
+)
+
+logging.basicConfig(level=logging.INFO)
+app = FastAPI()
+
+# ==========================================
+# 1. إعدادات المتغيرات (Environment Variables)
+# ==========================================
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+GAS_WEB_APP_URL = os.environ.get("GAS_WEB_APP_URL")
+CHANNEL_ID = os.environ.get("CHANNEL_ID")
+ADMIN_ID = str(os.environ.get("ADMIN_ID", ""))
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+TIME_LIMIT_SECONDS = 30
+
+# ==========================================
+# 2. قوائم الأزرار الدائمة (Reply Keyboards)
+# ==========================================
+USER_KB = ReplyKeyboardMarkup([
+    ["🎮 سؤال جديد", "🗂️ تغيير القسم"],
+    ["🏆 لوحة الشرف", "📊 رصيدي الحالي"],
+    ["⭐ المفضلة", "📚 المكتبة"],
+    ["🚀 ابدأ من جديد"]
+], resize_keyboard=True)
+
+ADMIN_KB = ReplyKeyboardMarkup([
+    ["🎮 سؤال جديد", "🧠 توليد أسئلة (AI)"],
+    ["📥 استيراد إكسل", "📚 إضافة كتاب (مباشر)"],
+    ["🏆 لوحة الشرف", "📚 المكتبة"],
+    ["🚀 ابدأ من جديد"]
+], resize_keyboard=True)
+
+def get_keyboard(user_id):
+    if str(user_id) == ADMIN_ID:
+        return ADMIN_KB
+    return USER_KB
+
+# ==========================================
+# 3. دوال مساعدة للاتصال بـ Google Sheets
+# ==========================================
+def api_request(action, **kwargs):
+    """دالة مركزية للتخاطب مع Google Apps Script"""
+    payload = {"action": action}
+    payload.update(kwargs)
+    try:
+        res = requests.post(GAS_WEB_APP_URL, json=payload)
+        return res.json()
+    except Exception as e:
+        logging.error(f"GAS API Error: {e}")
+        return {"status": "error"}
+
+# ==========================================
+# 4. محرك الذكاء الاصطناعي (Gemini AI)
+# ==========================================
+def generate_ai_questions(text: str):
+    prompt = f"""أنت خبير في إنشاء المسابقات. استخرج 3 أسئلة خيارات متعددة دقيقة من النص التالي.
+يجب أن تكون النتيجة عبارة عن مصفوفة JSON صالحة (Valid JSON Array) حصراً بدون أي نصوص إضافية.
+صيغة الكائن: [{{"question": "السؤال", "correct": "الصح", "wrong": ["خطأ 1", "خطأ 2", "خطأ 3"]}}]
+النص: {text[:3000]}"""
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    headers = {'Content-Type': 'application/json'}
+    
+    res = requests.post(url, json=payload, headers=headers).json()
+    try:
+        raw_text = res['candidates'][0]['content']['parts'][0]['text']
+        raw_text = raw_text.replace('```json', '').replace('```', '').strip()
+        return json.loads(raw_text)
+    except:
+        return None
+
+# ==========================================
+# 5. دوال البوت (Handlers)
+# ==========================================
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    # تسجيل المستخدم في قوقل شيت (تصفير النقاط إذا كان جديداً)
+    api_request("register_user", user_id=user.id, name=user.first_name)
+    
+    welcome_msg = (
+        f"مرحباً بك يا *{user.first_name}* في عالم التحدي والمعرفة! 🌟🎮\n\n"
+        f"اختر من القائمة بالأسفل للبدء:"
+    )
+    await update.message.reply_text(welcome_msg, parse_mode="Markdown", reply_markup=get_keyboard(user.id))
+
+# --- نظام المكتبة (رفع الملفات للقناة وحفظها بالشيت) ---
+async def handle_book_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) != ADMIN_ID:
+        return
+        
+    doc = update.message.document
+    msg = await update.message.reply_text("⏳ جاري رفع الكتاب للقناة وأرشفته في قاعدة البيانات...")
+    
+    try:
+        # 1. إرسال الكتاب لقناة تيليجرام للحصول على مساحة مجانية
+        forwarded = await context.bot.forward_message(
+            chat_id=CHANNEL_ID, 
+            from_chat_id=update.effective_chat.id, 
+            message_id=update.message.message_id
+        )
+        
+        # 2. حفظ بيانات الكتاب مع الـ file_id في قوقل شيت
+        book_title = doc.file_name.rsplit('.', 1)[0]
+        api_request("add_item", parentId="books", name=book_title, type="file", fileId=doc.file_id)
+        
+        await msg.edit_text(f"✅ *تم إضافة الكتاب للمكتبة بنجاح!*\n📖 الاسم: {book_title}", parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text("❌ حدث خطأ أثناء الرفع. تأكد من البوت مشرف في القناة.")
+
+# --- نظام الذكاء الاصطناعي للأسئلة ---
+async def ai_generate_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) != ADMIN_ID:
+        return
+    await update.message.reply_text("🧠 أرسل لي الآن النص (مقال أو فقرة) لأقوم باستخراج الأسئلة منه وإرسالها كملف Excel.")
+    return 1 # الانتقال لحالة الاستماع للنص
+
+async def ai_generate_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    msg = await update.message.reply_text("⏳ جاري تحليل النص بالذكاء الاصطناعي...")
+    
+    questions = generate_ai_questions(text)
+    if not questions:
+        await msg.edit_text("❌ فشل الذكاء الاصطناعي في استخراج الأسئلة، حاول بنص أوضح.")
+        return ConversationHandler.END
+        
+    # تحويل JSON إلى Excel باستخدام Pandas
+    df = pd.DataFrame([{
+        'السؤال': q['question'],
+        'الإجابة الصحيحة': q['correct'],
+        'خطأ 1': q['wrong'][0] if len(q['wrong'])>0 else '',
+        'خطأ 2': q['wrong'][1] if len(q['wrong'])>1 else '',
+        'خطأ 3': q['wrong'][2] if len(q['wrong'])>2 else '',
+        'المجموعة': 'قسم الذكاء الاصطناعي'
+    } for q in questions])
+    
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='AI_Questions')
+    output.seek(0)
+    
+    await msg.delete()
+    await update.message.reply_document(
+        document=output, 
+        filename="AI_Generated_Questions.xlsx",
+        caption="🤖 الأسئلة جاهزة للمراجعة والرفع!"
+    )
+    return ConversationHandler.END
+
+# ==========================================
+# 6. بناء التطبيق (Application Builder)
+# ==========================================
+ptb = Application.builder().token(BOT_TOKEN).build()
+
+# مدير المحادثة للذكاء الاصطناعي
+ai_conv_handler = ConversationHandler(
+    entry_points=[MessageHandler(filters.Regex("^🧠 توليد أسئلة \(AI\)$"), ai_generate_request)],
+    states={1: [MessageHandler(filters.TEXT & ~filters.COMMAND, ai_generate_process)]},
+    fallbacks=[CommandHandler("start", start_command)]
+)
+
+ptb.add_handler(CommandHandler("start", start_command))
+ptb.add_handler(ai_conv_handler)
+ptb.add_handler(MessageHandler(filters.Document.ALL & filters.Chat(int(ADMIN_ID) if ADMIN_ID else 0), handle_book_upload))
+
+# ==========================================
+# 7. نقطة النهاية للـ Webhook
+# ==========================================
+@app.post("/api/webhook")
+async def process_update(request: Request):
+    try:
+        if not ptb._initialized: 
+            await ptb.initialize()
+        data = await request.json()
+        await ptb.process_update(Update.de_json(data, ptb.bot))
+        return {"status": "ok"}
+    except Exception as e: 
+        logging.error(f"Webhook Error: {e}")
+        return {"status": "error"}

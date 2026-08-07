@@ -17,11 +17,11 @@ app = FastAPI()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = str(os.environ.get("ADMIN_ID", "")) 
-CHANNEL_ID = os.environ.get("CHANNEL_ID") # تأكد من وجوده في Vercel (مثال: @YourChannel)
+CHANNEL_ID = os.environ.get("CHANNEL_ID") 
 TIME_LIMIT = 30
 
 # ==========================================
-# 1. تهيئة قاعدة البيانات (Motor Async)
+# 1. تهيئة قاعدة البيانات والكاش اللحظي
 # ==========================================
 MONGODB_URI = os.environ.get("MONGODB_URI")
 db = None
@@ -33,12 +33,18 @@ if MONGODB_URI:
     except Exception as e:
         logging.error(f"Error connecting to MongoDB: {e}")
 
+# 🚀 ذاكرة الكاش السريعة لتجاوز بطء قاعدة البيانات
+GLOBAL_CACHE = {}
+
+def clear_cache():
+    GLOBAL_CACHE.clear()
+
 user_last_action = {}
 
 async def check_spam(user_id: str) -> bool:
     now = time.time()
     last = user_last_action.get(user_id, 0)
-    if now - last < 0.4: return True
+    if now - last < 0.25: return True  # تقليل وقت المنع لزيادة سرعة التفاعل
     user_last_action[user_id] = now
     return False
 
@@ -53,22 +59,20 @@ async def is_admin(user_id: str) -> bool:
 # 2. الواجهة الرئيسية
 # ==========================================
 async def get_main_keyboard(user_id: str):
-    admin = await is_admin(user_id)
-    if admin:
+    if await is_admin(user_id):
         return ReplyKeyboardMarkup([
             ["🔍 اعرف الله"],
             ["📥 استيراد إكسل", "📤 تصدير إكسل"]
         ], resize_keyboard=True)
-    return ReplyKeyboardMarkup([
-        ["🔍 اعرف الله"]
-    ], resize_keyboard=True)
+    return ReplyKeyboardMarkup([["🔍 اعرف الله"]], resize_keyboard=True)
 
 # ==========================================
-# 3. عرض تفاصيل الدرس وأزرار الانتقال للقناة
+# 3. عرض تفاصيل الدرس (بسرعة الكاش)
 # ==========================================
 async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
     if db is None: return
 
+    # جلب الدرس (محاولة الكاش أو القاعدة)
     try:
         doc = await db.library.find_one({"_id": ObjectId(doc_id)})
     except:
@@ -83,54 +87,41 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
     lesson_title = doc.get("lesson", "بدون عنوان")
     series = doc.get("category", "عام")
     
-    # جلب جميع الملفات المرتبطة بهذه المحاضرة لإنشاء الأزرار الديناميكية
-    cursor = db.library.find({"lesson": lesson_title})
-    items = await cursor.to_list(length=None)
+    # 🚀 استخدام الكاش لجلب محتويات الدرس فوراً
+    cache_key = f"items_{lesson_title}"
+    if cache_key not in GLOBAL_CACHE:
+        cursor = db.library.find({"lesson": lesson_title})
+        GLOBAL_CACHE[cache_key] = await cursor.to_list(length=None)
+    items = GLOBAL_CACHE[cache_key]
     
-    # ترتيب الأزرار لتبدو منسقة دائماً
-    preferred_order = ["فيديو", "نص", "صوت", "صور"]
-    def get_sort_key(item):
-        t = str(item.get("type", ""))
-        for idx, p in enumerate(preferred_order):
-            if p in t: return idx
-        return 99
-    items = sorted(items, key=get_sort_key)
-    
-    btns = []
-    row = []
+    links = {"فيديو": None, "نص": None, "صوت": None, "صور": None}
     
     for item in items:
         f_type = str(item.get("type", "نص"))
         f_link = str(item.get("file_id", "")).strip()
         
-        if "فيديو" in f_type: btn_text = "🎬 مشاهدة الفيديو"
-        elif "صوت" in f_type: btn_text = "🎧 الاستماع للصوت"
-        elif "صور" in f_type or "صوره" in f_type: btn_text = "🖼️ عرض الصور"
-        else: btn_text = "📚 قراءة الملزمة"
-        
-        # 🌟 تحويل الزر إلى رابط مباشر يأخذك للقناة
         if f_link and f_link.lower() not in ['nan', 'none', '']:
-            if not f_link.startswith('http'):
-                f_link = f"https://{f_link}"
-            row.append(InlineKeyboardButton(btn_text, url=f_link))
-        else:
-            # إذا لم يوجد رابط في الإكسل، يظهر زر ينبه المستخدم
-            row.append(InlineKeyboardButton(btn_text, callback_data="media_unavailable"))
-            
-        if len(row) == 2:
-            btns.append(row)
-            row = []
-    if row: btns.append(row)
+            if not f_link.startswith('http'): f_link = f"https://{f_link}"
+            if "فيديو" in f_type: links["فيديو"] = f_link
+            elif "صوت" in f_type: links["صوت"] = f_link
+            elif "صور" in f_type or "صوره" in f_type: links["صور"] = f_link
+            else: links["نص"] = f_link
 
-    # 🎨 إضافة زر الاختبار
+    def make_btn(text, link):
+        if link: return InlineKeyboardButton(text, url=link)
+        return InlineKeyboardButton(text, callback_data="media_unavail")
+
+    btns = [
+        [make_btn("🎬 مشاهدة الفيديو", links["فيديو"]), make_btn("📚 قراءة الملزمة", links["نص"])],
+        [make_btn("🎧 الاستماع للصوت", links["صوت"]), make_btn("🖼️ عرض الصور", links["صور"])]
+    ]
+
     btns.append([InlineKeyboardButton("✨ 📝 ابدأ اختبار الدرس الآن ✨", callback_data=f"quizles_{doc_id}")])
     
-    # 🎨 إضافة زر المشاركة
     bot_username = context.bot.username
     share_url = f"https://t.me/share/url?text=📚 إليك هذا الدرس القيم: {lesson_title}\n&url=https://t.me/{bot_username}?start=les_{doc_id}"
     btns.append([InlineKeyboardButton("🔗 شارك هذا الدرس (لتعم الفائدة)", url=share_url)])
     
-    # 🎨 أزرار التنقل السفلية
     btns.append([
         InlineKeyboardButton("🔙 رجوع للسلسلة", callback_data=f"cat_{series[:25]}"),
         InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")
@@ -138,10 +129,8 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
 
     txt = f"📖 **{lesson_title}**\n📂 السلسلة: {series}\n\n👇 اختر المحتوى للانتقال إليه:"
     
-    if message_id:
-        await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
-    else:
-        await context.bot.send_message(chat_id, txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+    if message_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+    else: await context.bot.send_message(chat_id, txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
 
 # ==========================================
 # 4. معالجة الرسائل واستيراد/تصدير الإكسل
@@ -155,12 +144,11 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = await db.users.find_one({"_id": user_id})
     state = user.get("state", "") if user else ""
     
-    # إذا كان يرفع إكسل
     if state == "WAIT_EXCEL" and msg.document:
         if not msg.document.file_name.endswith(('.xlsx', '.xls')):
             return await msg.reply_text("⚠️ يرجى رفع ملف بصيغة Excel (.xlsx) فقط.")
         
-        await msg.reply_text("⏳ جاري تحليل ملف الإكسل وتحديث قاعدة البيانات...")
+        await msg.reply_text("⏳ جاري تحليل ملف الإكسل...")
         try:
             file = await context.bot.get_file(msg.document.file_id)
             byte_array = await file.download_as_bytearray()
@@ -203,28 +191,10 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 updates_log += f"✅ تم استيراد {count_q} سؤال."
 
             await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
+            clear_cache() # 🚀 مسح الكاش عند رفع إكسل جديد لضمان تحديث البيانات
             return await msg.reply_text(f"🎉 **تم تحديث قاعدة البيانات بنجاح!**\n\n{updates_log}", parse_mode="Markdown")
         except Exception as e:
-            logging.error(f"Excel import error: {e}")
             return await msg.reply_text("❌ حدث خطأ أثناء معالجة ملف الإكسل.")
-
-    # 🌟 إنشاء روابط تلقائية عند رفع المدير لملفات عبر البوت 🌟
-    if not state and (msg.document or msg.video or msg.audio or msg.voice or msg.photo):
-        media_type = "نص" if msg.document else "فيديو" if msg.video else "صوت" if (msg.audio or msg.voice) else "صوره" if msg.photo else "نص"
-        final_link = None
-        
-        if CHANNEL_ID:
-            try:
-                copied_msg = await context.bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=chat_id, message_id=msg.message_id)
-                channel_username = CHANNEL_ID.replace('@', '')
-                final_link = f"https://t.me/{channel_username}/{copied_msg.message_id}"
-            except Exception as e:
-                logging.error(f"Error copying to channel: {e}")
-        
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_CAT", "temp_data": {"file_id": final_link, "type": media_type}}}, upsert=True)
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء الرفع", callback_data="admin_cancel")]])
-        await msg.reply_text("📥 **تم استلام الملف وتوجيهه للقناة!**\n\n📁 أرسل الآن اسم **السلسلة** التي ينتمي إليها:", parse_mode="Markdown", reply_markup=keyboard)
-
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -236,21 +206,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = await get_main_keyboard(user_id)
     
-    # 🌟 إكمال عملية الرفع اليدوي (السلسلة -> المحاضرة)
-    user = await db.users.find_one({"_id": user_id})
-    state = user.get("state", "") if user else ""
-    temp_data = user.get("temp_data", {}) if user else {}
-
-    if state == "WAIT_CAT":
-        temp_data["category"] = text
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_LES", "temp_data": temp_data}})
-        return await update.message.reply_text("✅ أرسل الآن اسم **المحاضرة / الدرس**:", parse_mode="Markdown")
-
-    if state == "WAIT_LES":
-        await db.library.insert_one({"title": text, "category": temp_data["category"], "lesson": text, "type": temp_data["type"], "file_id": temp_data["file_id"], "created_at": time.time()})
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
-        return await update.message.reply_text(f"🎉 تم حفظ الدرس ورابط القناة بنجاح!", parse_mode="Markdown")
-
     if text.startswith('/start'):
         await db.users.update_one({"_id": user_id}, {"$setOnInsert": {"score": 0, "streak": 0, "answered": []}}, upsert=True)
         if 'les_' in text:
@@ -261,64 +216,51 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=kb)
 
     if text == '🔍 اعرف الله':
-        categories = await db.library.distinct("category")
+        if "categories" not in GLOBAL_CACHE:
+            GLOBAL_CACHE["categories"] = await db.library.distinct("category")
+        categories = GLOBAL_CACHE["categories"]
+        
         if not categories: return await update.message.reply_text("📚 السلاسل قيد التجهيز.", reply_markup=kb)
         btns = [[InlineKeyboardButton(f"📂 | {c}", callback_data=f"cat_{c[:25]}")] for c in categories]
         return await update.message.reply_text("📚 **المشروع القرآني:**\nيرجى اختيار السلسلة المطلوبة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if text == '📥 استيراد إكسل' and await is_admin(user_id):
-        btns = [
-            [InlineKeyboardButton("✅ نعم، متأكد وموافق", callback_data="import_confirm")],
-            [InlineKeyboardButton("❌ الإلغاء", callback_data="admin_cancel")]
-        ]
-        warn_txt = "⚠️ **تنبيه هام:**\nرفع ملف إكسل جديد سيؤدي إلى **مسح البيانات القديمة** واستبدالها بالجديدة.\nهل أنت متأكد من رغبتك بالاستمرار؟"
-        return await update.message.reply_text(warn_txt, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        btns = [[InlineKeyboardButton("✅ نعم، متأكد", callback_data="import_confirm")], [InlineKeyboardButton("❌ الإلغاء", callback_data="admin_cancel")]]
+        return await update.message.reply_text("⚠️ سيتم مسح البيانات القديمة. هل أنت متأكد؟", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if text == '📤 تصدير إكسل' and await is_admin(user_id):
         await update.message.reply_text("⏳ جاري تجهيز ملف الإكسل...")
         try:
-            lib_cursor = db.library.find({})
-            lib_data = await lib_cursor.to_list(length=None)
+            lib_data = await db.library.find({}).to_list(length=None)
             df_lib = pd.DataFrame(lib_data)
             if not df_lib.empty:
-                df_lib = df_lib.rename(columns={"category": "السلسلة", "lesson": "المحاضرة /الدرس", "type": "النوع", "file_id": "الرابط"})
-                df_lib = df_lib[["المحاضرة /الدرس", "السلسلة", "النوع", "الرابط"]]
-            else:
-                df_lib = pd.DataFrame(columns=["المحاضرة /الدرس", "السلسلة", "النوع", "الرابط"])
+                df_lib = df_lib.rename(columns={"category": "السلسلة", "lesson": "المحاضرة /الدرس", "type": "النوع", "file_id": "الرابط"})[["المحاضرة /الدرس", "السلسلة", "النوع", "الرابط"]]
+            else: df_lib = pd.DataFrame(columns=["المحاضرة /الدرس", "السلسلة", "النوع", "الرابط"])
                 
-            q_cursor = db.questions.find({})
-            q_data = await q_cursor.to_list(length=None)
-            q_list = []
-            for q in q_data:
-                wrongs = q.get("wrong", [])
-                q_list.append({
-                    "السلسلة": q.get("category", ""),
-                    "المحاضرة /الدرس": q.get("lesson", ""),
-                    "السؤال": q.get("question", ""),
-                    "الإجابة_الصحيحة": q.get("correct", ""),
-                    "الإجابة_الخاطئة_1": wrongs[0] if len(wrongs) > 0 else "",
-                    "الإجابة_الخاطئة_2": wrongs[1] if len(wrongs) > 1 else ""
-                })
-            df_q = pd.DataFrame(q_list)
+            q_data = await db.questions.find({}).to_list(length=None)
+            q_list = [{"السلسلة": q.get("category", ""), "المحاضرة /الدرس": q.get("lesson", ""), "السؤال": q.get("question", ""), "الإجابة_الصحيحة": q.get("correct", ""), "الإجابة_الخاطئة_1": q.get("wrong", [])[0] if len(q.get("wrong", [])) > 0 else "", "الإجابة_الخاطئة_2": q.get("wrong", [])[1] if len(q.get("wrong", [])) > 1 else ""} for q in q_data]
             
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df_lib.to_excel(writer, sheet_name='المشروع القرأني', index=False)
-                df_q.to_excel(writer, sheet_name='قيم_نفسك', index=False)
-            
+                pd.DataFrame(q_list).to_excel(writer, sheet_name='قيم_نفسك', index=False)
             output.seek(0)
             return await context.bot.send_document(chat_id, document=output, filename="قاعدة_بيانات_البوت.xlsx")
-        except Exception:
-            return await update.message.reply_text("❌ حدث خطأ أثناء إنشاء ملف الإكسل.")
+        except: return await update.message.reply_text("❌ حدث خطأ.")
 
     await update.message.reply_text("الرجاء استخدام الأزرار أدناه 👇", reply_markup=kb)
 
 # ==========================================
 # 5. التفاعل السريع مع الأزرار الشفافة
 # ==========================================
+async def background_db_update(user_id, q_id):
+    """🚀 دالة خلفية لتحديث النقاط في قاعدة البيانات دون إيقاف الشاشة"""
+    if db is not None:
+        await db.users.update_one({"_id": str(user_id)}, {"$push": {"answered": str(q_id)}})
+
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    try: await query.answer()
+    try: await query.answer() # الاستجابة الفورية لقتل علامة التحميل
     except: pass
 
     data = query.data
@@ -327,45 +269,40 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await check_spam(user_id): return
     if data == "ignore": return 
     
-    # 🌟 زر التنبيه إذا لم يوجد رابط للملف 🌟
-    if data == "media_unavailable":
-        try: await context.bot.answer_callback_query(query.id, "⚠️ هذا المحتوى غير متوفر حالياً في القناة.", show_alert=True)
+    if data == "media_unavail":
+        try: await context.bot.answer_callback_query(query.id, "⚠️ هذا المحتوى غير متوفر حالياً.", show_alert=True)
         except: pass
         return
 
     if data == "main_menu":
-        categories = await db.library.distinct("category")
-        btns = [[InlineKeyboardButton(f"📂 | {c}", callback_data=f"cat_{c[:25]}")] for c in categories]
+        if "categories" not in GLOBAL_CACHE: GLOBAL_CACHE["categories"] = await db.library.distinct("category")
+        btns = [[InlineKeyboardButton(f"📂 | {c}", callback_data=f"cat_{c[:25]}")] for c in GLOBAL_CACHE["categories"]]
         return await query.edit_message_text("📚 **المشروع القرآني:**\nيرجى اختيار السلسلة المطلوبة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data == "admin_cancel":
         await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
         await query.message.delete()
-        return await context.bot.send_message(chat_id, "✅ تم الإلغاء.")
+        return
 
     if data == "import_confirm":
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_EXCEL"}}, upsert=True)
-        return await query.edit_message_text("📥 **أرسل ملف الإكسل (.xlsx) الآن...**\nتأكد من مطابقة أسماء الشيتات.", parse_mode="Markdown")
+        return await query.edit_message_text("📥 **أرسل ملف الإكسل (.xlsx) الآن...**", parse_mode="Markdown")
 
     if data.startswith("cat_"):
         cat_name = data.replace("cat_", "")
-        pipeline = [
-            {"$match": {"category": {"$regex": f"^{cat_name}"}}}, 
-            {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}
-        ]
-        cursor = db.library.aggregate(pipeline)
-        lessons = await cursor.to_list(length=None)
         
-        btns = []
-        for les in lessons:
-            btns.append([InlineKeyboardButton(f"📖 | {les['_id']}", callback_data=f"les_{str(les['doc_id'])}")])
-            
+        # 🚀 جلب الدروس من الكاش للسرعة
+        cache_key = f"cat_les_{cat_name}"
+        if cache_key not in GLOBAL_CACHE:
+            pipeline = [{"$match": {"category": {"$regex": f"^{cat_name}"}}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}]
+            GLOBAL_CACHE[cache_key] = await db.library.aggregate(pipeline).to_list(length=None)
+        
+        btns = [[InlineKeyboardButton(f"📖 | {les['_id']}", callback_data=f"les_{str(les['doc_id'])}")] for les in GLOBAL_CACHE[cache_key]]
         btns.append([InlineKeyboardButton("🔙 العودة للرئيسية", callback_data="main_menu")])
         return await query.edit_message_text(f"📂 **السلسلة:**\nاختر المحاضرة أو الدرس المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data.startswith("les_"):
-        doc_id = data.replace("les_", "")
-        return await show_lesson_ui(context, chat_id, doc_id, message_id=query.message.message_id)
+        return await show_lesson_ui(context, chat_id, data.replace("les_", ""), message_id=query.message.message_id)
 
     if data.startswith("quizles_"):
         try: await context.bot.answer_callback_query(query.id, "🚀 جاري التجهيز...", show_alert=False)
@@ -384,9 +321,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if diff > TIME_LIMIT or diff < 0: 
             return await query.edit_message_text("⏳ *انتهى الوقت المخصص للإجابة!*", parse_mode="Markdown")
         
-        user = await db.users.find_one({"_id": str(user_id)})
-        if user: await db.users.update_one({"_id": str(user_id)}, {"$push": {"answered": str(q_id)}})
-        
+        # 🚀 تحديث الشاشة فوراً (Before DB)
         new_kb = []
         for row in query.message.reply_markup.inline_keyboard:
             new_row = []
@@ -400,6 +335,10 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_kb.append(new_row)
             
         await query.edit_message_reply_markup(InlineKeyboardMarkup(new_kb))
+        
+        # 🚀 إرسال التحديث لقاعدة البيانات في الخلفية دون تأخير المستخدم
+        asyncio.create_task(background_db_update(user_id, q_id))
+        return
 
 async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, back_doc_id=None):
     if db is None: return
@@ -407,9 +346,12 @@ async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, bac
     user = await db.users.find_one({"_id": str(user_id)})
     answered = user.get("answered", []) if user else []
 
-    cursor = db.questions.find({"lesson": lesson})
-    all_qs = await cursor.to_list(length=None)
-    available = [q for q in all_qs if str(q['_id']) not in answered]
+    # 🚀 جلب الأسئلة من الكاش
+    cache_key = f"q_{lesson}"
+    if cache_key not in GLOBAL_CACHE:
+        GLOBAL_CACHE[cache_key] = await db.questions.find({"lesson": lesson}).to_list(length=None)
+        
+    available = [q for q in GLOBAL_CACHE[cache_key] if str(q['_id']) not in answered]
     
     if not available:
         txt = "🎉 **أتممت جميع أسئلة هذا الدرس بنجاح!**"
@@ -447,7 +389,7 @@ async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, bac
 ptb = Application.builder().token(BOT_TOKEN).build()
 ptb.add_handler(CommandHandler("start", handle_messages))
 ptb.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
-ptb.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.PHOTO, handle_media_upload))
+ptb.add_handler(MessageHandler(filters.Document.ALL, handle_media_upload))
 ptb.add_handler(CallbackQueryHandler(handle_callbacks))
 
 @app.post("/{full_path:path}")
@@ -458,9 +400,10 @@ async def process_update(request: Request):
         update = Update.de_json(req_json, ptb.bot)
         await ptb.process_update(update)
         
+        # الانتظار الخفي لإنهاء مهام الرفع والتسجيل في القاعدة
         await asyncio.sleep(0.01)
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        if tasks: await asyncio.wait(tasks, timeout=5.0)
+        if tasks: await asyncio.wait(tasks, timeout=3.0)
     except Exception as e:
         logging.error(f"Webhook error: {e}")
     return {"status": "ok"}

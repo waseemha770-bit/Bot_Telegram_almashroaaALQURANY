@@ -4,7 +4,7 @@ import time
 import random
 import logging
 from fastapi import FastAPI, Request
-from supabase import create_client, Client
+from pymongo import MongoClient
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -17,18 +17,19 @@ OWNER_ID = str(os.environ.get("ADMIN_ID", ""))
 TIME_LIMIT = 30
 
 # ==========================================
-# 1. تهيئة الاتصال بـ Supabase
+# 1. تهيئة الاتصال بـ MongoDB
 # ==========================================
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+MONGODB_URI = os.environ.get("MONGODB_URI")
+db = None
 
-supabase: Client = None
-if SUPABASE_URL and SUPABASE_KEY:
+if MONGODB_URI:
     try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logging.info("Supabase connected successfully.")
+        client = MongoClient(MONGODB_URI)
+        # سيتم إنشاء قاعدة بيانات باسم quran_lms تلقائياً
+        db = client['quran_lms']
+        logging.info("MongoDB connected successfully.")
     except Exception as e:
-        logging.error(f"Error connecting to Supabase: {e}")
+        logging.error(f"Error connecting to MongoDB: {e}")
 
 # ==========================================
 # 2. القوائم بهوية المشروع القرآني
@@ -46,9 +47,8 @@ ADMIN_KB = ReplyKeyboardMarkup([
 
 async def get_keyboard(user_id):
     if str(user_id) == OWNER_ID: return ADMIN_KB
-    if supabase:
-        res = supabase.table("admins").select("id").eq("id", str(user_id)).execute()
-        if res.data: return ADMIN_KB
+    if db is not None:
+        if db.admins.find_one({"_id": str(user_id)}): return ADMIN_KB
     return USER_KB
 
 def get_rank(score):
@@ -58,47 +58,46 @@ def get_rank(score):
     return "نبراس قرآني 🔥"
 
 # ==========================================
-# 3. دوال التعامل مع Supabase (قاعدة البيانات)
+# 3. دوال التعامل مع MongoDB (ذاتية البناء)
 # ==========================================
 def register_user(user_id, name):
-    res = supabase.table("users").select("id").eq("id", str(user_id)).execute()
-    if not res.data:
-        supabase.table("users").insert({
-            "id": str(user_id), "name": name, "score": 0, "streak": 0, 
-            "answered": [], "state": "", "temp_data": {}
-        }).execute()
+    db.users.update_one(
+        {"_id": str(user_id)},
+        {"$setOnInsert": {"name": name, "score": 0, "streak": 0, "answered": [], "state": "", "temp_data": {}}},
+        upsert=True
+    )
 
 def get_user_score(user_id):
-    res = supabase.table("users").select("score").eq("id", str(user_id)).execute()
-    return res.data[0].get("score", 0) if res.data else 0
+    user = db.users.find_one({"_id": str(user_id)})
+    return user.get("score", 0) if user else 0
 
 def set_state(user_id, state, temp_data):
-    supabase.table("users").update({"state": state, "temp_data": temp_data}).eq("id", str(user_id)).execute()
+    db.users.update_one({"_id": str(user_id)}, {"$set": {"state": state, "temp_data": temp_data}})
 
 def get_state(user_id):
-    res = supabase.table("users").select("state, temp_data").eq("id", str(user_id)).execute()
-    if res.data:
-        return res.data[0].get("state", ""), res.data[0].get("temp_data", {})
+    user = db.users.find_one({"_id": str(user_id)})
+    if user:
+        return user.get("state", ""), user.get("temp_data", {})
     return "", {}
 
 def add_media(category, lesson, media_type, file_id):
-    supabase.table("library").insert({
+    db.library.insert_one({
         "title": lesson, "category": category, "lesson": lesson, 
-        "type": media_type, "file_id": file_id
-    }).execute()
+        "type": media_type, "file_id": file_id, "created_at": time.time()
+    })
 
 def get_library_data():
-    res = supabase.table("library").select("*").execute()
+    items = list(db.library.find())
     categories = set()
     lessons_dict = {}
     media_dict = {}
     
-    for item in res.data:
+    for item in items:
         cat = item.get("category", "عام")
         les = item.get("lesson", "بدون عنوان")
         f_type = item.get("type")
         f_id = item.get("file_id")
-        item_id = str(item.get("id"))
+        item_id = str(item.get("_id"))
 
         categories.add(cat)
         if cat not in lessons_dict: lessons_dict[cat] = {}
@@ -116,15 +115,20 @@ def get_library_data():
     return {"categories": list(categories), "lessons": lessons_dict, "media": media_dict}
 
 def submit_answer_to_db(user_id, q_id, is_correct, points, category):
-    user_res = supabase.table("users").select("score, streak, answered").eq("id", str(user_id)).execute()
-    if user_res.data:
-        data = user_res.data[0]
-        score = data.get("score", 0) + points
-        streak = (data.get("streak", 0) + 1) if is_correct else 0
-        answered = data.get("answered", [])
-        answered.append(str(q_id))
+    user = db.users.find_one({"_id": str(user_id)})
+    if user:
+        score = user.get("score", 0) + points
+        streak = (user.get("streak", 0) + 1) if is_correct else 0
         
-        supabase.table("users").update({"score": score, "streak": streak, "answered": answered}).eq("id", str(user_id)).execute()
+        db.users.update_one(
+            {"_id": str(user_id)},
+            {"$set": {"score": score, "streak": streak}, "$push": {"answered": str(q_id)}}
+        )
+        db.stats.update_one(
+            {"_id": category},
+            {"$inc": {"plays": 1}},
+            upsert=True
+        )
 
 # ==========================================
 # 4. معالجة النصوص وحالات لوحة الإدارة
@@ -152,7 +156,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     kb = await get_keyboard(user_id)
 
-    if not supabase: return await update.message.reply_text("⚠️ خطأ في الاتصال بقاعدة البيانات.")
+    if db is None: return await update.message.reply_text("⚠️ خطأ في الاتصال بقاعدة البيانات.")
 
     state, temp_data = get_state(user_id)
 
@@ -183,12 +187,12 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     if state == "WAIT_Q_WRONG":
         wrongs = [w.strip() for w in text.split(',')]
-        supabase.table("questions").insert({
+        db.questions.insert_one({
             "category": temp_data["q_cat"],
             "question": temp_data["q_text"],
             "correct": temp_data["q_correct"],
             "wrong": wrongs
-        }).execute()
+        })
         set_state(user_id, "", {})
         return await update.message.reply_text("🎉 تم إضافة السؤال لقاعدة البيانات بنجاح!", reply_markup=kb)
 
@@ -262,7 +266,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lesson_data = get_library_data().get("media", {}).get(les_id)
         if lesson_data and "title" in lesson_data:
              title = lesson_data["title"]
-             supabase.table("library").delete().eq("lesson", title).execute()
+             db.library.delete_many({"lesson": title})
              return await query.edit_message_text(f"✅ تم حذف الدرس وكل ملفاته بنجاح!")
         return await query.edit_message_text("حدث خطأ أثناء الحذف.")
 
@@ -334,22 +338,25 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(InlineKeyboardMarkup(new_kb))
 
 async def send_question(context, chat_id, category, user_id=None, msg_id=None):
-    user_res = supabase.table("users").select("answered").eq("id", str(user_id)).execute()
-    answered = user_res.data[0].get("answered", []) if user_res.data else []
+    user = db.users.find_one({"_id": str(user_id)})
+    answered = user.get("answered", []) if user else []
 
-    q_res = supabase.table("questions").select("*").execute()
-    available = [q for q in q_res.data if str(q['id']) not in answered and (category == "عام" or q.get("category") == category)]
+    query_filter = {} if category == "عام" else {"category": category}
+    all_qs = list(db.questions.find(query_filter))
+    
+    available = [q for q in all_qs if str(q['_id']) not in answered]
     
     if not available:
-        txt = "🎉 لقد أتممت جميع الأسئلة المتاحة!"
+        txt = "🎉 لقد أتممت جميع الأسئلة المتاحة في هذا القسم!"
         return await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=msg_id) if msg_id else await context.bot.send_message(chat_id, txt)
 
     q = random.choice(available)
     ts, is_gold = int(time.time()), 1 if random.random() < 0.15 else 0
     
-    btns = [InlineKeyboardButton(q["correct"], callback_data=f"ans_1_{q['id']}_{ts}_{is_gold}_{category}")]
+    q_id_str = str(q['_id'])
+    btns = [InlineKeyboardButton(q["correct"], callback_data=f"ans_1_{q_id_str}_{ts}_{is_gold}_{category}")]
     for w in q.get("wrong", []):
-        if w: btns.append(InlineKeyboardButton(w, callback_data=f"ans_0_{q['id']}_{ts}_{is_gold}_{category}"))
+        if w: btns.append(InlineKeyboardButton(w, callback_data=f"ans_0_{q_id_str}_{ts}_{is_gold}_{category}"))
     random.shuffle(btns)
     
     inline_kb = [[b] for b in btns] if any(len(b.text) > 20 for b in btns) else [[btns[i], btns[i+1]] if i+1 < len(btns) else [btns[i]] for i in range(0, len(btns), 2)]

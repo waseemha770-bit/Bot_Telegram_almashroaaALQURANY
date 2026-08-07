@@ -44,7 +44,7 @@ user_last_action = {}
 async def check_spam(user_id: str) -> bool:
     now = time.time()
     last = user_last_action.get(user_id, 0)
-    if now - last < 0.25: return True  # تقليل وقت المنع لزيادة سرعة التفاعل
+    if now - last < 0.25: return True  # استجابة سريعة جداً
     user_last_action[user_id] = now
     return False
 
@@ -67,27 +67,26 @@ async def get_main_keyboard(user_id: str):
     return ReplyKeyboardMarkup([["🔍 اعرف الله"]], resize_keyboard=True)
 
 # ==========================================
-# 3. عرض تفاصيل الدرس (بسرعة الكاش)
+# 3. عرض تفاصيل الدرس (وتثبيت الأزرار الأربعة بأمان)
 # ==========================================
 async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
     if db is None: return
 
-    # جلب الدرس (محاولة الكاش أو القاعدة)
-    try:
-        doc = await db.library.find_one({"_id": ObjectId(doc_id)})
-    except:
-        doc = None
+    try: doc = await db.library.find_one({"_id": ObjectId(doc_id)})
+    except: doc = None
         
     if not doc:
         txt = "⚠️ عذراً، هذا الدرس غير متوفر حالياً أو تم حذفه."
-        if message_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id)
+        if message_id: 
+            try: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id)
+            except: pass
         else: await context.bot.send_message(chat_id, txt)
         return
 
     lesson_title = doc.get("lesson", "بدون عنوان")
     series = doc.get("category", "عام")
     
-    # 🚀 استخدام الكاش لجلب محتويات الدرس فوراً
+    # جلب المحتويات من الكاش للسرعة الفائقة
     cache_key = f"items_{lesson_title}"
     if cache_key not in GLOBAL_CACHE:
         cursor = db.library.find({"lesson": lesson_title})
@@ -96,21 +95,30 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
     
     links = {"فيديو": None, "نص": None, "صوت": None, "صور": None}
     
+    # 🛡️ فلترة الروابط التالفة لحماية واجهة تيليجرام من التعطل
     for item in items:
         f_type = str(item.get("type", "نص"))
-        f_link = str(item.get("file_id", "")).strip()
+        f_link = item.get("file_id")
         
-        if f_link and f_link.lower() not in ['nan', 'none', '']:
-            if not f_link.startswith('http'): f_link = f"https://{f_link}"
-            if "فيديو" in f_type: links["فيديو"] = f_link
-            elif "صوت" in f_type: links["صوت"] = f_link
-            elif "صور" in f_type or "صوره" in f_type: links["صور"] = f_link
-            else: links["نص"] = f_link
+        safe_link = None
+        if pd.notna(f_link) and str(f_link).strip().lower() not in ['', 'nan', 'none', 'null', 'لا يوجد']:
+            safe_link = str(f_link).strip().replace(" ", "")
+            if not safe_link.startswith('http'): 
+                safe_link = f"https://{safe_link}"
+            if "." not in safe_link: safe_link = None # التأكد من أنه رابط حقيقي
 
+        if safe_link:
+            if "فيديو" in f_type: links["فيديو"] = safe_link
+            elif "صوت" in f_type: links["صوت"] = safe_link
+            elif "صور" in f_type or "صوره" in f_type: links["صور"] = safe_link
+            else: links["نص"] = safe_link
+
+    # دالة ذكية لإنشاء الأزرار بشكل ثابت مهما كان محتوى الإكسل
     def make_btn(text, link):
         if link: return InlineKeyboardButton(text, url=link)
         return InlineKeyboardButton(text, callback_data="media_unavail")
 
+    # 🎨 الأزرار الأربعة مثبتة إجبارياً هنا 
     btns = [
         [make_btn("🎬 مشاهدة الفيديو", links["فيديو"]), make_btn("📚 قراءة الملزمة", links["نص"])],
         [make_btn("🎧 الاستماع للصوت", links["صوت"]), make_btn("🖼️ عرض الصور", links["صور"])]
@@ -129,8 +137,16 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
 
     txt = f"📖 **{lesson_title}**\n📂 السلسلة: {series}\n\n👇 اختر المحتوى للانتقال إليه:"
     
-    if message_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
-    else: await context.bot.send_message(chat_id, txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+    try:
+        if message_id: 
+            await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+        else: 
+            await context.bot.send_message(chat_id, txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+    except Exception as e:
+        logging.error(f"UI Error: {e}")
+        # احتياط أمان أخير في حال وجود خلل غير متوقع
+        fallback_btns = [[InlineKeyboardButton("⚠️ حدث خطأ في روابط هذا الدرس", callback_data="media_unavail")], [InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")]]
+        if message_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(fallback_btns))
 
 # ==========================================
 # 4. معالجة الرسائل واستيراد/تصدير الإكسل
@@ -191,7 +207,7 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 updates_log += f"✅ تم استيراد {count_q} سؤال."
 
             await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
-            clear_cache() # 🚀 مسح الكاش عند رفع إكسل جديد لضمان تحديث البيانات
+            clear_cache() # 🚀 مسح الكاش عند رفع إكسل جديد لضمان تحديث البيانات للطلاب
             return await msg.reply_text(f"🎉 **تم تحديث قاعدة البيانات بنجاح!**\n\n{updates_log}", parse_mode="Markdown")
         except Exception as e:
             return await msg.reply_text("❌ حدث خطأ أثناء معالجة ملف الإكسل.")
@@ -216,7 +232,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=kb)
 
     if text == '🔍 اعرف الله':
-        if "categories" not in GLOBAL_CACHE:
+        if "categories" not in GLOBAL_CACHE: 
             GLOBAL_CACHE["categories"] = await db.library.distinct("category")
         categories = GLOBAL_CACHE["categories"]
         
@@ -254,7 +270,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 5. التفاعل السريع مع الأزرار الشفافة
 # ==========================================
 async def background_db_update(user_id, q_id):
-    """🚀 دالة خلفية لتحديث النقاط في قاعدة البيانات دون إيقاف الشاشة"""
     if db is not None:
         await db.users.update_one({"_id": str(user_id)}, {"$push": {"answered": str(q_id)}})
 
@@ -269,6 +284,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await check_spam(user_id): return
     if data == "ignore": return 
     
+    # ⚠️ استجابة الزر الذي لا يوجد له رابط في الإكسل
     if data == "media_unavail":
         try: await context.bot.answer_callback_query(query.id, "⚠️ هذا المحتوى غير متوفر حالياً.", show_alert=True)
         except: pass
@@ -291,7 +307,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("cat_"):
         cat_name = data.replace("cat_", "")
         
-        # 🚀 جلب الدروس من الكاش للسرعة
         cache_key = f"cat_les_{cat_name}"
         if cache_key not in GLOBAL_CACHE:
             pipeline = [{"$match": {"category": {"$regex": f"^{cat_name}"}}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}]
@@ -321,7 +336,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if diff > TIME_LIMIT or diff < 0: 
             return await query.edit_message_text("⏳ *انتهى الوقت المخصص للإجابة!*", parse_mode="Markdown")
         
-        # 🚀 تحديث الشاشة فوراً (Before DB)
+        # 🚀 تحديث الشاشة فوراً (السرعة الفائقة)
         new_kb = []
         for row in query.message.reply_markup.inline_keyboard:
             new_row = []
@@ -336,7 +351,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         await query.edit_message_reply_markup(InlineKeyboardMarkup(new_kb))
         
-        # 🚀 إرسال التحديث لقاعدة البيانات في الخلفية دون تأخير المستخدم
+        # 🚀 إرسال التحديث لقاعدة البيانات في الخلفية
         asyncio.create_task(background_db_update(user_id, q_id))
         return
 
@@ -346,7 +361,6 @@ async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, bac
     user = await db.users.find_one({"_id": str(user_id)})
     answered = user.get("answered", []) if user else []
 
-    # 🚀 جلب الأسئلة من الكاش
     cache_key = f"q_{lesson}"
     if cache_key not in GLOBAL_CACHE:
         GLOBAL_CACHE[cache_key] = await db.questions.find({"lesson": lesson}).to_list(length=None)
@@ -400,7 +414,6 @@ async def process_update(request: Request):
         update = Update.de_json(req_json, ptb.bot)
         await ptb.process_update(update)
         
-        # الانتظار الخفي لإنهاء مهام الرفع والتسجيل في القاعدة
         await asyncio.sleep(0.01)
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         if tasks: await asyncio.wait(tasks, timeout=3.0)

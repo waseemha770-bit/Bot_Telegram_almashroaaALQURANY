@@ -3,7 +3,8 @@ import json
 import time
 import random
 import logging
-import certifi  # استدعاء مكتبة شهادات الأمان
+import asyncio
+import certifi
 from fastapi import FastAPI, Request
 from pymongo import MongoClient
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
@@ -25,7 +26,6 @@ db = None
 
 if MONGODB_URI:
     try:
-        # استخدام certifi.where() لحل مشكلة SSL Handshake
         client = MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
         db = client['quran_lms']
         logging.info("MongoDB connected successfully.")
@@ -62,74 +62,82 @@ def get_rank(score):
 # 3. دوال التعامل مع MongoDB
 # ==========================================
 def register_user(user_id, name):
-    db.users.update_one(
-        {"_id": str(user_id)},
-        {"$setOnInsert": {"name": name, "score": 0, "streak": 0, "answered": [], "state": "", "temp_data": {}}},
-        upsert=True
-    )
+    if db is not None:
+        db.users.update_one(
+            {"_id": str(user_id)},
+            {"$setOnInsert": {"name": name, "score": 0, "streak": 0, "answered": [], "state": "", "temp_data": {}}},
+            upsert=True
+        )
 
 def get_user_score(user_id):
-    user = db.users.find_one({"_id": str(user_id)})
-    return user.get("score", 0) if user else 0
+    if db is not None:
+        user = db.users.find_one({"_id": str(user_id)})
+        return user.get("score", 0) if user else 0
+    return 0
 
 def set_state(user_id, state, temp_data):
-    db.users.update_one({"_id": str(user_id)}, {"$set": {"state": state, "temp_data": temp_data}})
+    if db is not None:
+        db.users.update_one({"_id": str(user_id)}, {"$set": {"state": state, "temp_data": temp_data}})
 
 def get_state(user_id):
-    user = db.users.find_one({"_id": str(user_id)})
-    if user:
-        return user.get("state", ""), user.get("temp_data", {})
+    if db is not None:
+        user = db.users.find_one({"_id": str(user_id)})
+        if user:
+            return user.get("state", ""), user.get("temp_data", {})
     return "", {}
 
 def add_media(category, lesson, media_type, file_id):
-    db.library.insert_one({
-        "title": lesson, "category": category, "lesson": lesson, 
-        "type": media_type, "file_id": file_id, "created_at": time.time()
-    })
+    if db is not None:
+        db.library.insert_one({
+            "title": lesson, "category": category, "lesson": lesson, 
+            "type": media_type, "file_id": file_id, "created_at": time.time()
+        })
 
 def get_library_data():
-    items = list(db.library.find())
     categories = set()
     lessons_dict = {}
     media_dict = {}
     
-    for item in items:
-        cat = item.get("category", "عام")
-        les = item.get("lesson", "بدون عنوان")
-        f_type = item.get("type")
-        f_id = item.get("file_id")
-        item_id = str(item.get("_id"))
+    if db is not None:
+        items = list(db.library.find())
+        for item in items:
+            cat = item.get("category", "عام")
+            les = item.get("lesson", "بدون عنوان")
+            f_type = item.get("type")
+            f_id = item.get("file_id")
+            item_id = str(item.get("_id"))
 
-        categories.add(cat)
-        if cat not in lessons_dict: lessons_dict[cat] = {}
+            categories.add(cat)
+            if cat not in lessons_dict: lessons_dict[cat] = {}
 
-        if les not in lessons_dict[cat]:
-            lessons_dict[cat][les] = item_id
+            if les not in lessons_dict[cat]:
+                lessons_dict[cat][les] = item_id
 
-        les_id = lessons_dict[cat][les]
-        if les_id not in media_dict:
-            media_dict[les_id] = {"title": les, "category": cat, "files": {}}
+            les_id = lessons_dict[cat][les]
+            if les_id not in media_dict:
+                media_dict[les_id] = {"title": les, "category": cat, "files": {}}
 
-        media_dict[les_id]["files"][f_type] = f_id
-        media_dict[les_id]["db_id"] = item_id
+            media_dict[les_id]["files"][f_type] = f_id
+            media_dict[les_id]["db_id"] = item_id
 
     return {"categories": list(categories), "lessons": lessons_dict, "media": media_dict}
 
 def submit_answer_to_db(user_id, q_id, is_correct, points, category):
-    user = db.users.find_one({"_id": str(user_id)})
-    if user:
-        score = user.get("score", 0) + points
-        streak = (user.get("streak", 0) + 1) if is_correct else 0
-        
-        db.users.update_one(
-            {"_id": str(user_id)},
-            {"$set": {"score": score, "streak": streak}, "$push": {"answered": str(q_id)}}
-        )
-        db.stats.update_one(
-            {"_id": category},
-            {"$inc": {"plays": 1}},
-            upsert=True
-        )
+    if db is not None:
+        user = db.users.find_one({"_id": str(user_id)})
+        if user:
+            score = user.get("score", 0) + points
+            streak = (user.get("streak", 0) + 1) if is_correct else 0
+            
+            db.users.update_one(
+                {"_id": str(user_id)},
+                {"$set": {"score": score, "streak": streak}, "$push": {"answered": str(q_id)}}
+            )
+            db.stats.update_one(
+                {"_id": category},
+                {"$inc": {"plays": 1}},
+                upsert=True
+            )
 
 # ==========================================
 # 4. معالجة النصوص وحالات لوحة الإدارة
@@ -267,7 +275,8 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lesson_data = get_library_data().get("media", {}).get(les_id)
         if lesson_data and "title" in lesson_data:
              title = lesson_data["title"]
-             db.library.delete_many({"lesson": title})
+             if db is not None:
+                 db.library.delete_many({"lesson": title})
              return await query.edit_message_text(f"✅ تم حذف الدرس وكل ملفاته بنجاح!")
         return await query.edit_message_text("حدث خطأ أثناء الحذف.")
 
@@ -339,6 +348,10 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(InlineKeyboardMarkup(new_kb))
 
 async def send_question(context, chat_id, category, user_id=None, msg_id=None):
+    if db is None:
+        txt = "⚠️ خطأ في الاتصال بقاعدة البيانات."
+        return await context.bot.send_message(chat_id, txt)
+
     user = db.users.find_one({"_id": str(user_id)})
     answered = user.get("answered", []) if user else []
 
@@ -367,7 +380,7 @@ async def send_question(context, chat_id, category, user_id=None, msg_id=None):
     else: await context.bot.send_message(chat_id, txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_kb))
 
 # ==========================================
-# 6. تشغيل السيرفر (FastAPI)
+# 6. تشغيل السيرفر (FastAPI) و Vercel Hack
 # ==========================================
 ptb = Application.builder().token(BOT_TOKEN).build()
 ptb.add_handler(CommandHandler("start", handle_messages))
@@ -377,6 +390,22 @@ ptb.add_handler(CallbackQueryHandler(handle_callbacks))
 
 @app.post("/{full_path:path}")
 async def process_update(request: Request):
-    if not ptb._initialized: await ptb.initialize()
-    await ptb.process_update(Update.de_json(await request.json(), ptb.bot))
+    if not ptb._initialized: 
+        await ptb.initialize()
+        
+    try:
+        req_json = await request.json()
+        update = Update.de_json(req_json, ptb.bot)
+        await ptb.process_update(update)
+        
+        # --- حل مشكلة Vercel Serverless ---
+        # إجبار السيرفر على الانتظار حتى تنتهي مهام إرسال الرسائل في الخلفية
+        await asyncio.sleep(0.01)
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if tasks:
+            await asyncio.wait(tasks, timeout=5.0)
+            
+    except Exception as e:
+        logging.error(f"Webhook error: {e}")
+        
     return {"status": "ok"}

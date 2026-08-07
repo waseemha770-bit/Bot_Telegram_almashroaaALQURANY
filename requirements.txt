@@ -3,3 +3,5 @@ uvicorn==0.24.0
 python-telegram-bot==20.7
 motor[srv]
 certifi
+pandas
+openpyxl

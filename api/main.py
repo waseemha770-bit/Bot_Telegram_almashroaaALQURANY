@@ -37,7 +37,7 @@ user_last_action = {}
 async def check_spam(user_id: str) -> bool:
     now = time.time()
     last = user_last_action.get(user_id, 0)
-    if now - last < 0.4: return True # تسريع الاستجابة
+    if now - last < 0.4: return True
     user_last_action[user_id] = now
     return False
 
@@ -63,7 +63,7 @@ async def get_main_keyboard(user_id: str):
     ], resize_keyboard=True)
 
 # ==========================================
-# 3. عرض تفاصيل الدرس (أزرار ثابتة للوسائط والتنقل)
+# 3. عرض تفاصيل الدرس (بتصميم UX احترافي)
 # ==========================================
 async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
     if db is None: return
@@ -74,7 +74,7 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
         doc = None
         
     if not doc:
-        txt = "⚠️ هذا الدرس غير متوفر حالياً أو تم حذفه."
+        txt = "⚠️ عذراً، هذا الدرس غير متوفر حالياً أو تم حذفه."
         if message_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id)
         else: await context.bot.send_message(chat_id, txt)
         return
@@ -82,32 +82,33 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
     lesson_title = doc.get("lesson", "بدون عنوان")
     series = doc.get("category", "عام")
     
-    # بناء أزرار الوسائط الثابتة كما طلبت
+    # 🎨 تصميم جذاب لأزرار الوسائط
     btns = [
         [
-            InlineKeyboardButton("فيديو 🎥", callback_data=f"media_{doc_id}_فيديو"),
-            InlineKeyboardButton("كتاب 📚", callback_data=f"media_{doc_id}_نص")
+            InlineKeyboardButton("🎬 مشاهدة الفيديو", callback_data=f"media_{doc_id}_فيديو"),
+            InlineKeyboardButton("📚 قراءة الملزمة", callback_data=f"media_{doc_id}_نص")
         ],
         [
-            InlineKeyboardButton("صوت 🎧", callback_data=f"media_{doc_id}_صوت"),
-            InlineKeyboardButton("صور 🖼️", callback_data=f"media_{doc_id}_صور")
+            InlineKeyboardButton("🎧 الاستماع للصوت", callback_data=f"media_{doc_id}_صوت"),
+            InlineKeyboardButton("🖼️ عرض الصور", callback_data=f"media_{doc_id}_صور")
         ]
     ]
 
-    # زر الأسئلة والمشاركة
-    btns.append([InlineKeyboardButton("📝 أسئلة خاصة بالدرس", callback_data=f"quizles_{doc_id}")])
+    # 🎨 إبراز زر الاختبار لتحفيز المستخدم
+    btns.append([InlineKeyboardButton("✨ 📝 ابدأ اختبار الدرس الآن ✨", callback_data=f"quizles_{doc_id}")])
     
+    # 🎨 زر مشاركة أنيق
     bot_username = context.bot.username
     share_url = f"https://t.me/share/url?text=📚 إليك هذا الدرس القيم: {lesson_title}\n&url=https://t.me/{bot_username}?start=les_{doc_id}"
-    btns.append([InlineKeyboardButton("🔗 مشاركة الدرس مع المجموعة", url=share_url)])
+    btns.append([InlineKeyboardButton("🔗 شارك هذا الدرس (لتعم الفائدة)", url=share_url)])
     
-    # أزرار العودة والتنقل
+    # 🎨 أزرار التنقل السفلية
     btns.append([
-        InlineKeyboardButton("رجوع للسلسلة ⬅️", callback_data=f"cat_{series[:25]}"),
-        InlineKeyboardButton("الرئيسية 🏠", callback_data="main_menu")
+        InlineKeyboardButton("🔙 رجوع", callback_data=f"cat_{series[:25]}"),
+        InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")
     ])
 
-    txt = f"📖 **{lesson_title}**\n📁 السلسلة: {series}\n\nاختر من المحتويات التالية: 👇"
+    txt = f"📖 **{lesson_title}**\n📂 السلسلة: {series}\n\n👇 اختر المحتوى الذي ترغب بتصفحه:"
     
     if message_id:
         await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
@@ -199,13 +200,15 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == '🔍 اعرف الله':
         categories = await db.library.distinct("category")
         if not categories: return await update.message.reply_text("📚 السلاسل قيد التجهيز.", reply_markup=kb)
-        btns = [[InlineKeyboardButton(f"📁 {c}", callback_data=f"cat_{c[:25]}")] for c in categories]
-        return await update.message.reply_text("📚 **المشروع القرآني:**\nاختر السلسلة (المجموعة) المطلوبة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        
+        # 🎨 أزرار السلاسل بتنسيق جذاب
+        btns = [[InlineKeyboardButton(f"📂 | {c}", callback_data=f"cat_{c[:25]}")] for c in categories]
+        return await update.message.reply_text("📚 **المشروع القرآني:**\nيرجى اختيار السلسلة (المجموعة) المطلوبة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if text == '📥 استيراد إكسل' and await is_admin(user_id):
         btns = [
             [InlineKeyboardButton("✅ نعم، متأكد وموافق", callback_data="import_confirm")],
-            [InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]
+            [InlineKeyboardButton("❌ الإلغاء", callback_data="admin_cancel")]
         ]
         warn_txt = "⚠️ **تنبيه هام:**\nرفع ملف إكسل جديد سيؤدي إلى **مسح البيانات القديمة** واستبدالها بالجديدة.\nهل أنت متأكد من رغبتك بالاستمرار؟"
         return await update.message.reply_text(warn_txt, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
@@ -254,12 +257,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    
-    # 🌟 الحل السحري لسرعة الاستجابة: الرد الفوري على تيليجرام لإيقاف علامة التحميل!
-    try:
-        await query.answer()
-    except:
-        pass
+    try: await query.answer()
+    except: pass
 
     data = query.data
     chat_id, user_id = query.message.chat_id, str(query.from_user.id)
@@ -269,8 +268,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "main_menu":
         categories = await db.library.distinct("category")
-        btns = [[InlineKeyboardButton(f"📁 {c}", callback_data=f"cat_{c[:25]}")] for c in categories]
-        return await query.edit_message_text("📚 **المشروع القرآني:**\nاختر السلسلة المطلوبة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        # 🎨 تصميم أزرار القائمة الرئيسية
+        btns = [[InlineKeyboardButton(f"📂 | {c}", callback_data=f"cat_{c[:25]}")] for c in categories]
+        return await query.edit_message_text("📚 **المشروع القرآني:**\nيرجى اختيار السلسلة المطلوبة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data == "admin_cancel":
         await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
@@ -279,7 +279,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "import_confirm":
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_EXCEL"}}, upsert=True)
-        return await query.edit_message_text("📥 **أرسل ملف الإكسل (.xlsx) الآن...**", parse_mode="Markdown")
+        return await query.edit_message_text("📥 **أرسل ملف الإكسل (.xlsx) الآن...**\nتأكد من مطابقة أسماء الشيتات.", parse_mode="Markdown")
 
     if data.startswith("cat_"):
         cat_name = data.replace("cat_", "")
@@ -290,35 +290,31 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor = db.library.aggregate(pipeline)
         lessons = await cursor.to_list(length=None)
         
+        # 🎨 تنسيق قائمة المحاضرات بفاصل بصري مريح
         btns = []
         for les in lessons:
-            btns.append([InlineKeyboardButton(f"📖 {les['_id']}", callback_data=f"les_{str(les['doc_id'])}")])
+            btns.append([InlineKeyboardButton(f"📖 | {les['_id']}", callback_data=f"les_{str(les['doc_id'])}")])
             
-        # إضافة أزرار الرجوع للتنقل السلس
-        btns.append([InlineKeyboardButton("الرئيسية 🏠", callback_data="main_menu")])
-        return await query.edit_message_text(f"📁 **السلسلة:**\nاختر المحاضرة أو الدرس:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        btns.append([InlineKeyboardButton("🔙 العودة للسلاسل", callback_data="main_menu")])
+        return await query.edit_message_text(f"📂 **السلسلة:**\nاختر المحاضرة أو الدرس المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data.startswith("les_"):
         doc_id = data.replace("les_", "")
         return await show_lesson_ui(context, chat_id, doc_id, message_id=query.message.message_id)
 
-    # 🔹 جلب نوع الوسائط بناءً على الأزرار الثابتة الجديدة
     if data.startswith("media_"):
         parts = data.split("_")
         doc_id = parts[1]
-        req_type = parts[2] # (فيديو، نص، صوت، صور)
+        req_type = parts[2]
         
         doc = await db.library.find_one({"_id": ObjectId(doc_id)})
         if not doc: return await context.bot.send_message(chat_id, "⚠️ الدرس غير موجود.")
         
         lesson_title = doc["lesson"]
-        
-        # مطابقة زر (كتاب) مع (نص أو كتاب أو ملزمة) في الإكسل
         regex = "نص|كتاب|ملزمة" if req_type == "نص" else "صور|صوره|صورة" if req_type == "صور" else req_type
         media_item = await db.library.find_one({"lesson": lesson_title, "type": {"$regex": regex}})
         
         if not media_item or not media_item.get("file_id") or str(media_item.get("file_id")).lower() == 'nan':
-            # تنبيه منبثق للمستخدم إذا لم يتوفر هذا النوع من الملفات
             try: await context.bot.answer_callback_query(query.id, "⚠️ هذا المحتوى غير متوفر حالياً لهذه المحاضرة.", show_alert=True)
             except: pass
             return
@@ -337,6 +333,8 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("quizles_"):
+        try: await context.bot.answer_callback_query(query.id, "🚀 جاري تجهيز الاختبار...", show_alert=False)
+        except: pass
         doc_id = data.replace("quizles_", "")
         doc = await db.library.find_one({"_id": ObjectId(doc_id)})
         if not doc: return
@@ -379,9 +377,10 @@ async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, bac
     available = [q for q in all_qs if str(q['_id']) not in answered]
     
     if not available:
-        txt = "🎉 **أتممت جميع أسئلة هذا الدرس!**"
-        btns = [[InlineKeyboardButton("الرئيسية 🏠", callback_data="main_menu")]]
-        if back_doc_id: btns.insert(0, [InlineKeyboardButton("رجوع للدرس ⬅️", callback_data=f"les_{back_doc_id}")])
+        txt = "🎉 **أتممت جميع أسئلة هذا الدرس بنجاح!**"
+        btns = []
+        if back_doc_id: btns.append([InlineKeyboardButton("🔙 العودة للدرس", callback_data=f"les_{back_doc_id}")])
+        btns.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")])
         if msg_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=msg_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
         else: await context.bot.send_message(chat_id, txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
         return
@@ -390,6 +389,7 @@ async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, bac
     ts = int(time.time())
     q_id_str = str(q['_id'])
     
+    # 🎨 تصميم إجابات الاختبار لتكون واضحة
     btns = [InlineKeyboardButton(q["correct"], callback_data=f"ans_1_{q_id_str}_{ts}")]
     for w in q.get("wrong", []):
         if w and str(w).lower() != 'nan': btns.append(InlineKeyboardButton(w, callback_data=f"ans_0_{q_id_str}_{ts}"))
@@ -397,13 +397,13 @@ async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, bac
     
     inline_kb = [[b] for b in btns] 
     
-    # أزرار الرجوع في صفحة الاختبار
+    # 🎨 أزرار التحكم داخل الاختبار
     nav_row = []
-    if back_doc_id: nav_row.append(InlineKeyboardButton("رجوع للدرس ⬅️", callback_data=f"les_{back_doc_id}"))
-    nav_row.append(InlineKeyboardButton("الرئيسية 🏠", callback_data="main_menu"))
+    if back_doc_id: nav_row.append(InlineKeyboardButton("🔙 إنهاء الاختبار", callback_data=f"les_{back_doc_id}"))
+    nav_row.append(InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu"))
     inline_kb.append(nav_row)
     
-    txt = f"📖 المحاضرة: {lesson}\n\n❓ *{q['question']}*\n\n⏱️ أمامك {TIME_LIMIT} ثانية للإجابة!"
+    txt = f"📖 **المحاضرة:** {lesson}\n\n❓ *{q['question']}*\n\n⏱️ أمامك {TIME_LIMIT} ثانية للإجابة!"
     
     if msg_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=msg_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_kb))
     else: await context.bot.send_message(chat_id, txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_kb))

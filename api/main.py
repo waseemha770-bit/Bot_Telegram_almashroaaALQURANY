@@ -3,6 +3,7 @@ import json
 import time
 import random
 import logging
+import certifi  # استدعاء مكتبة شهادات الأمان
 from fastapi import FastAPI, Request
 from pymongo import MongoClient
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,15 +18,15 @@ OWNER_ID = str(os.environ.get("ADMIN_ID", ""))
 TIME_LIMIT = 30
 
 # ==========================================
-# 1. تهيئة الاتصال بـ MongoDB
+# 1. تهيئة الاتصال بـ MongoDB مع شهادات الأمان
 # ==========================================
 MONGODB_URI = os.environ.get("MONGODB_URI")
 db = None
 
 if MONGODB_URI:
     try:
-        client = MongoClient(MONGODB_URI)
-        # سيتم إنشاء قاعدة بيانات باسم quran_lms تلقائياً
+        # استخدام certifi.where() لحل مشكلة SSL Handshake
+        client = MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
         db = client['quran_lms']
         logging.info("MongoDB connected successfully.")
     except Exception as e:
@@ -58,7 +59,7 @@ def get_rank(score):
     return "نبراس قرآني 🔥"
 
 # ==========================================
-# 3. دوال التعامل مع MongoDB (ذاتية البناء)
+# 3. دوال التعامل مع MongoDB
 # ==========================================
 def register_user(user_id, name):
     db.users.update_one(

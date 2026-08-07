@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request
 from motor.motor_asyncio import AsyncIOMotorClient
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from bson.objectid import ObjectId
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI()
@@ -62,22 +63,29 @@ async def get_main_keyboard(user_id: str):
     ], resize_keyboard=True)
 
 # ==========================================
-# 3. عرض تفاصيل الدرس ومشاركته
+# 3. عرض تفاصيل الدرس ومشاركته (بالمعرف الفريد)
 # ==========================================
-async def show_lesson_ui(context, chat_id, les_id, message_id=None):
+async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
     if db is None: return
 
-    cursor = db.library.find({"lesson": les_id})
-    items = await cursor.to_list(length=None)
-    
-    if not items:
-        txt = "⚠️ هذا الدرس غير متوفر حالياً."
+    # البحث عن الدرس باستخدام المعرف القصير بدلاً من الاسم الطويل
+    try:
+        doc = await db.library.find_one({"_id": ObjectId(doc_id)})
+    except:
+        doc = None
+        
+    if not doc:
+        txt = "⚠️ هذا الدرس غير متوفر حالياً أو تم حذفه."
         if message_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id)
         else: await context.bot.send_message(chat_id, txt)
         return
 
-    series = items[0].get("category", "عام")
-    title = items[0].get("lesson", "بدون عنوان")
+    lesson_title = doc.get("lesson", "بدون عنوان")
+    series = doc.get("category", "عام")
+    
+    # جلب جميع الملفات المرتبطة بنفس اسم المحاضرة
+    cursor = db.library.find({"lesson": lesson_title})
+    items = await cursor.to_list(length=None)
     
     btns = []
     row = []
@@ -90,15 +98,16 @@ async def show_lesson_ui(context, chat_id, les_id, message_id=None):
             row = []
     if row: btns.append(row)
 
-    btns.append([InlineKeyboardButton("📝 أسئلة خاصة بالدرس", callback_data=f"quizles_{title}")])
+    # زر الأسئلة يستخدم أيضاً الـ ID القصير
+    btns.append([InlineKeyboardButton("📝 أسئلة خاصة بالدرس", callback_data=f"quizles_{doc_id}")])
     
     bot_username = context.bot.username
-    share_url = f"https://t.me/share/url?text=📚 إليك هذا الدرس القيم: {title}\n&url=https://t.me/{bot_username}?start=les_{title.replace(' ', '_')}"
+    share_url = f"https://t.me/share/url?text=📚 إليك هذا الدرس القيم: {lesson_title}\n&url=https://t.me/{bot_username}?start=les_{doc_id}"
     btns.append([InlineKeyboardButton("🔗 مشاركة الدرس مع المجموعة", url=share_url)])
     
-    btns.append([InlineKeyboardButton("رجوع ⬅️", callback_data=f"cat_{series[:50]}")])
+    btns.append([InlineKeyboardButton("رجوع ⬅️", callback_data=f"cat_{series[:25]}")])
 
-    txt = f"📖 **{title}**\n📁 السلسلة: {series}\n\nاختر من المحتويات التالية: 👇"
+    txt = f"📖 **{lesson_title}**\n📁 السلسلة: {series}\n\nاختر من المحتويات التالية: 👇"
     
     if message_id:
         await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
@@ -181,10 +190,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text.startswith('/start'):
         await db.users.update_one({"_id": user_id}, {"$setOnInsert": {"score": 0, "streak": 0, "answered": []}}, upsert=True)
+        # ميزة استقبال رابط المشاركة 
         if 'les_' in text:
-            les_id_safe = text.replace('/start les_', '')
-            les_id = les_id_safe.replace('_', ' ') 
-            return await show_lesson_ui(context, chat_id, les_id)
+            doc_id = text.replace('/start les_', '').strip()
+            return await show_lesson_ui(context, chat_id, doc_id)
             
         welcome_text = "📖 **أهلاً بك في منصة المشروع القرآني**\n\nتصفح الدروس وابدأ رحلتك المعرفية بالضغط على الزر أدناه 👇"
         return await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=kb)
@@ -192,7 +201,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == '🔍 اعرف الله':
         categories = await db.library.distinct("category")
         if not categories: return await update.message.reply_text("📚 السلاسل قيد التجهيز.", reply_markup=kb)
-        btns = [[InlineKeyboardButton(f"📁 {c}", callback_data=f"cat_{c[:50]}")] for c in categories]
+        btns = [[InlineKeyboardButton(f"📁 {c}", callback_data=f"cat_{c[:25]}")] for c in categories]
         return await update.message.reply_text("📚 **المشروع القرآني:**\nاختر السلسلة (المجموعة) المطلوبة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if text == '📥 استيراد إكسل' and await is_admin(user_id):
@@ -252,36 +261,52 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id, user_id = query.message.chat_id, str(query.from_user.id)
 
     if await check_spam(user_id): return await query.answer("الرجاء التمهل! ✋", show_alert=False)
-
-    if data == "ignore": 
-        return await query.answer()
+    if data == "ignore": return await query.answer()
+    
+    if data == "main_menu":
+        await query.answer()
+        categories = await db.library.distinct("category")
+        if not categories: return await query.edit_message_text("📚 السلاسل قيد التجهيز.")
+        btns = [[InlineKeyboardButton(f"📁 {c}", callback_data=f"cat_{c[:25]}")] for c in categories]
+        return await query.edit_message_text("📚 **المشروع القرآني:**\nاختر السلسلة (المجموعة) المطلوبة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data == "admin_cancel":
-        await query.answer() # تم إضافة الإجابة لمنع التعليق
+        await query.answer() 
         await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
         await query.message.delete()
         return await context.bot.send_message(chat_id, "✅ تم الإلغاء.")
 
     if data == "import_confirm":
-        await query.answer() # تم إضافة الإجابة لمنع التعليق
+        await query.answer() 
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_EXCEL"}}, upsert=True)
         return await query.edit_message_text("📥 **أرسل ملف الإكسل (.xlsx) الآن...**\nتأكد من أن أسماء الشيتات هي: (المشروع القرأني) و (قيم_نفسك).", parse_mode="Markdown")
 
     if data.startswith("cat_"):
-        await query.answer() # تم إضافة الإجابة لمنع التعليق
+        await query.answer()
         cat_name = data.replace("cat_", "")
-        lessons = await db.library.distinct("lesson", {"category": cat_name})
-        btns = [[InlineKeyboardButton(f"📖 {les}", callback_data=f"les_{les[:50]}")] for les in lessons]
-        return await query.edit_message_text(f"📁 **السلسلة: {cat_name}**\nاختر المحاضرة أو الدرس:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        
+        # استخراج المعرف القصير لكل درس لتجنب تجاوز حد 64 بايت
+        pipeline = [
+            {"$match": {"category": {"$regex": f"^{cat_name}"}}}, 
+            {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}
+        ]
+        cursor = db.library.aggregate(pipeline)
+        lessons = await cursor.to_list(length=None)
+        
+        btns = []
+        for les in lessons:
+            btns.append([InlineKeyboardButton(f"📖 {les['_id']}", callback_data=f"les_{str(les['doc_id'])}")])
+            
+        btns.append([InlineKeyboardButton("رجوع للرئيسية 🏠", callback_data="main_menu")])
+        return await query.edit_message_text(f"📁 **السلسلة:**\nاختر المحاضرة أو الدرس:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data.startswith("les_"):
-        await query.answer() # تم إضافة الإجابة لمنع التعليق
-        les_id = data.replace("les_", "")
-        return await show_lesson_ui(context, chat_id, les_id, message_id=query.message.message_id)
+        await query.answer() 
+        doc_id = data.replace("les_", "")
+        return await show_lesson_ui(context, chat_id, doc_id, message_id=query.message.message_id)
 
     if data.startswith("send_"):
         item_id = data.replace("send_", "")
-        from bson.objectid import ObjectId
         item = await db.library.find_one({"_id": ObjectId(item_id)})
         
         if not item or not item.get("file_id") or str(item.get("file_id")).lower() == 'nan':
@@ -297,12 +322,16 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif "صور" in f_type: await context.bot.send_photo(chat_id, f_id, caption=caption)
             else: await context.bot.send_document(chat_id, f_id, caption=caption)
         except Exception:
-            await context.bot.send_message(chat_id, "⚠️ الملف معطوب أو حُذف من سيرفرات تيليجرام. راجع رابط الإكسل.")
+            await context.bot.send_message(chat_id, "⚠️ الملف غير متوفر أو حُذف من سيرفرات تيليجرام.")
         return
 
     if data.startswith("quizles_"):
-        les_title = data.replace("quizles_", "")
         await query.answer("🚀 تجهيز الأسئلة...", show_alert=False)
+        doc_id = data.replace("quizles_", "")
+        doc = await db.library.find_one({"_id": ObjectId(doc_id)})
+        if not doc: return await query.answer("البيانات غير متاحة.", show_alert=True)
+        
+        les_title = doc.get("lesson")
         return await send_question(context, chat_id, lesson=les_title, user_id=user_id, msg_id=query.message.message_id)
 
     if data.startswith("ans_"):

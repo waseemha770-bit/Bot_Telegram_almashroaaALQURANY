@@ -48,7 +48,7 @@ async def is_admin(user_id: str) -> bool:
     return False
 
 # ==========================================
-# 2. الواجهة الرئيسية (حسب طلبك الجديد)
+# 2. الواجهة الرئيسية
 # ==========================================
 async def get_main_keyboard(user_id: str):
     admin = await is_admin(user_id)
@@ -67,7 +67,6 @@ async def get_main_keyboard(user_id: str):
 async def show_lesson_ui(context, chat_id, les_id, message_id=None):
     if db is None: return
 
-    # تجميع بيانات الدرس من قاعدة البيانات
     cursor = db.library.find({"lesson": les_id})
     items = await cursor.to_list(length=None)
     
@@ -82,10 +81,8 @@ async def show_lesson_ui(context, chat_id, les_id, message_id=None):
     
     btns = []
     row = []
-    # 1. توليد الأزرار ديناميكياً حسب "النوع" الموجود في الإكسل
     for item in items:
         f_type = item.get("type", "نص")
-        # إضافة أيقونة مناسبة حسب الاسم
         icon = "🎥" if "فيديو" in f_type else "📚" if ("كتاب" in f_type or "نص" in f_type) else "🎧" if "صوت" in f_type else "🖼️" if "صور" in f_type else "📁"
         row.append(InlineKeyboardButton(f"{f_type} {icon}", callback_data=f"send_{str(item['_id'])}"))
         if len(row) == 2:
@@ -93,15 +90,12 @@ async def show_lesson_ui(context, chat_id, les_id, message_id=None):
             row = []
     if row: btns.append(row)
 
-    # 2. زر اختبار الدرس
     btns.append([InlineKeyboardButton("📝 أسئلة خاصة بالدرس", callback_data=f"quizles_{title}")])
     
-    # 3. زر المشاركة (يفتح قائمة لاختيار المجموعة/المحادثة ويرسل رسالة مع رابط)
     bot_username = context.bot.username
     share_url = f"https://t.me/share/url?text=📚 إليك هذا الدرس القيم: {title}\n&url=https://t.me/{bot_username}?start=les_{title.replace(' ', '_')}"
     btns.append([InlineKeyboardButton("🔗 مشاركة الدرس مع المجموعة", url=share_url)])
     
-    # 4. زر الرجوع
     btns.append([InlineKeyboardButton("رجوع ⬅️", callback_data=f"cat_{series[:50]}")])
 
     txt = f"📖 **{title}**\n📁 السلسلة: {series}\n\nاختر من المحتويات التالية: 👇"
@@ -120,8 +114,6 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not await is_admin(user_id): return
 
     msg = update.message
-    
-    # التحقق مما إذا كان الإدمن في وضع "استيراد ملف إكسل"
     user = await db.users.find_one({"_id": user_id})
     state = user.get("state", "") if user else ""
     
@@ -136,10 +128,9 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             xls = pd.ExcelFile(io.BytesIO(byte_array))
             
             updates_log = ""
-            # 1. تحديث المشروع القرآني
             if 'المشروع القرأني' in xls.sheet_names:
                 df_lib = pd.read_excel(xls, sheet_name='المشروع القرأني')
-                await db.library.delete_many({}) # مسح القديم وتحديثه
+                await db.library.delete_many({}) 
                 count = 0
                 for _, row in df_lib.iterrows():
                     if pd.notna(row.get('المحاضرة /الدرس')) and pd.notna(row.get('السلسلة')):
@@ -153,7 +144,6 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                         count += 1
                 updates_log += f"✅ تم استيراد {count} درس ومحتوى.\n"
                 
-            # 2. تحديث قسم قيم نفسك
             if 'قيم_نفسك' in xls.sheet_names:
                 df_q = pd.read_excel(xls, sheet_name='قيم_نفسك')
                 await db.questions.delete_many({})
@@ -173,7 +163,7 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                         count_q += 1
                 updates_log += f"✅ تم استيراد {count_q} سؤال."
 
-            await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
+            await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
             return await msg.reply_text(f"🎉 **تم تحديث قاعدة البيانات بنجاح!**\n\n{updates_log}", parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Excel import error: {e}")
@@ -189,20 +179,16 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = await get_main_keyboard(user_id)
     
-    # معالجة ميزة المشاركة والتوجيه (Deep Linking)
     if text.startswith('/start'):
         await db.users.update_one({"_id": user_id}, {"$setOnInsert": {"score": 0, "streak": 0, "answered": []}}, upsert=True)
-        
-        # إذا جاء المستخدم من رابط مشاركة
         if 'les_' in text:
             les_id_safe = text.replace('/start les_', '')
-            les_id = les_id_safe.replace('_', ' ') # إرجاع المسافات
+            les_id = les_id_safe.replace('_', ' ') 
             return await show_lesson_ui(context, chat_id, les_id)
             
         welcome_text = "📖 **أهلاً بك في منصة المشروع القرآني**\n\nتصفح الدروس وابدأ رحلتك المعرفية بالضغط على الزر أدناه 👇"
         return await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=kb)
 
-    # القائمة الرئيسية المبسطة
     if text == '🔍 اعرف الله':
         categories = await db.library.distinct("category")
         if not categories: return await update.message.reply_text("📚 السلاسل قيد التجهيز.", reply_markup=kb)
@@ -220,7 +206,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == '📤 تصدير إكسل' and await is_admin(user_id):
         await update.message.reply_text("⏳ جاري سحب البيانات وتجهيز ملف الإكسل...")
         try:
-            # تجهيز الشيت الأول
             lib_cursor = db.library.find({})
             lib_data = await lib_cursor.to_list(length=None)
             df_lib = pd.DataFrame(lib_data)
@@ -230,7 +215,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 df_lib = pd.DataFrame(columns=["المحاضرة /الدرس", "السلسلة", "النوع", "الرابط"])
                 
-            # تجهيز الشيت الثاني
             q_cursor = db.questions.find({})
             q_data = await q_cursor.to_list(length=None)
             q_list = []
@@ -268,24 +252,30 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id, user_id = query.message.chat_id, str(query.from_user.id)
 
     if await check_spam(user_id): return await query.answer("الرجاء التمهل! ✋", show_alert=False)
-    if data == "ignore": return await query.answer()
+
+    if data == "ignore": 
+        return await query.answer()
 
     if data == "admin_cancel":
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
+        await query.answer() # تم إضافة الإجابة لمنع التعليق
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
         await query.message.delete()
         return await context.bot.send_message(chat_id, "✅ تم الإلغاء.")
 
     if data == "import_confirm":
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_EXCEL"}})
+        await query.answer() # تم إضافة الإجابة لمنع التعليق
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_EXCEL"}}, upsert=True)
         return await query.edit_message_text("📥 **أرسل ملف الإكسل (.xlsx) الآن...**\nتأكد من أن أسماء الشيتات هي: (المشروع القرأني) و (قيم_نفسك).", parse_mode="Markdown")
 
     if data.startswith("cat_"):
+        await query.answer() # تم إضافة الإجابة لمنع التعليق
         cat_name = data.replace("cat_", "")
         lessons = await db.library.distinct("lesson", {"category": cat_name})
         btns = [[InlineKeyboardButton(f"📖 {les}", callback_data=f"les_{les[:50]}")] for les in lessons]
         return await query.edit_message_text(f"📁 **السلسلة: {cat_name}**\nاختر المحاضرة أو الدرس:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data.startswith("les_"):
+        await query.answer() # تم إضافة الإجابة لمنع التعليق
         les_id = data.replace("les_", "")
         return await show_lesson_ui(context, chat_id, les_id, message_id=query.message.message_id)
 
@@ -307,10 +297,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif "صور" in f_type: await context.bot.send_photo(chat_id, f_id, caption=caption)
             else: await context.bot.send_document(chat_id, f_id, caption=caption)
         except Exception:
-            await context.bot.send_message(chat_id, "⚠️ الملف المعطوب أو حُذف من سيرفرات تيليجرام. راجع رابط الإكسل.")
+            await context.bot.send_message(chat_id, "⚠️ الملف معطوب أو حُذف من سيرفرات تيليجرام. راجع رابط الإكسل.")
         return
 
-    # تشغيل الاختبار لمحاضرة محددة
     if data.startswith("quizles_"):
         les_title = data.replace("quizles_", "")
         await query.answer("🚀 تجهيز الأسئلة...", show_alert=False)

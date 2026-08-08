@@ -74,7 +74,7 @@ def get_type_keyboard():
     ])
 
 # ==========================================
-# 3. عرض تفاصيل الدرس ومصحح الروابط
+# 3. عرض تفاصيل الدرس (ومُعالج الروابط الذكي)
 # ==========================================
 async def background_db_update(user_id, q_id=None, is_correct=None, lesson_view=None, cat_view=None):
     if db is None: return
@@ -116,29 +116,39 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
     
     links = {"فيديو": None, "نص": None, "صوت": None, "صور": None}
     
-    # 🌟 الفلتر الذكي لإصلاح الروابط التالفة أو المكتوبة بشكل خاطئ في الإكسل 🌟
+    # 🌟 الفلتر العبقري لمعالجة روابط (-100) والروابط الناقصة 🌟
     for item in items:
         f_type = str(item.get("type", "نص"))
         raw_link = str(item.get("file_id", "")).strip().replace(" ", "")
         
         safe_link = None
         if raw_link and raw_link.lower() not in ['', 'nan', 'none', 'null', 'لا يوجد']:
-            # 1. إذا كان الرابط في الإكسل مجرد رقم (مثلاً 125)
-            if raw_link.isdigit():
-                safe_link = f"https://t.me/almashro/{raw_link}"
-            # 2. إذا كان الرابط t.me/125 بدون اسم القناة
+            ch_name = CHANNEL_ID.replace('@', '').replace('https://t.me/', '')
+            
+            # 1. معالجة رابطك المباشر الذي يحتوي على -100
+            if "-100" in raw_link:
+                msg_id = raw_link.split("/")[-1] # استخراج رقم الرسالة من الرابط
+                safe_link = f"https://t.me/{ch_name}/{msg_id}"
+            
+            # 2. إذا كان الرابط في الإكسل مجرد رقم (مثلاً 65)
+            elif raw_link.isdigit():
+                safe_link = f"https://t.me/{ch_name}/{raw_link}"
+            
+            # 3. إذا كان الرابط t.me/65 بدون اسم القناة
             elif raw_link.startswith("t.me/") and raw_link.split("/")[1].isdigit():
-                safe_link = f"https://t.me/almashro/{raw_link.split('/')[1]}"
-            # 3. إذا كان الرابط https://t.me/125 بدون اسم القناة
+                safe_link = f"https://t.me/{ch_name}/{raw_link.split('/')[1]}"
+            
+            # 4. إذا كان الرابط https://t.me/65 بدون اسم القناة
             elif raw_link.startswith("https://t.me/") and len(raw_link.split("/")) >= 4 and raw_link.split("/")[3].isdigit():
-                safe_link = f"https://t.me/almashro/{raw_link.split('/')[3]}"
-            # 4. إذا كان مكتوب t.me/almashro/125 (إصلاح قياسي)
+                safe_link = f"https://t.me/{ch_name}/{raw_link.split('/')[3]}"
+            
+            # 5. إذا كان الرابط سليماً ولكنه يفتقد لـ https
             elif raw_link.startswith("t.me/"):
                 safe_link = f"https://{raw_link}"
-            # 5. إذا كان مكتوب almashro/125 فقط
+            
+            # 6. روابط أخرى
             elif "/" in raw_link and not raw_link.startswith("http"):
                 safe_link = f"https://t.me/{raw_link}"
-            # 6. إذا كان سليماً تماماً
             else:
                 safe_link = raw_link if raw_link.startswith("http") else f"https://{raw_link}"
 
@@ -177,7 +187,7 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
         logging.error(f"UI Error: {e}")
 
 # ==========================================
-# 4. معالجة الرسائل والملفات المُحولة
+# 4. معالجة الرسائل والملفات
 # ==========================================
 async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -192,7 +202,7 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not msg.document.file_name.endswith(('.xlsx', '.xls')):
             return await msg.reply_text("⚠️ يرجى رفع ملف بصيغة Excel (.xlsx) فقط.")
         
-        await msg.reply_text("⏳ جاري تحليل ملف الإكسل والتعرف على الشيتات تلقائياً...")
+        await msg.reply_text("⏳ جاري تحليل ملف الإكسل...")
         try:
             file = await context.bot.get_file(msg.document.file_id)
             byte_array = await file.download_as_bytearray()
@@ -221,7 +231,7 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                         l_val = str(row.get(link_col, '')).strip() if link_col and pd.notna(row.get(link_col)) else None
                         await db.library.insert_one({"category": str(row[cat_col]).strip(), "lesson": str(row[les_col]).strip(), "type": t_val, "file_id": l_val, "created_at": time.time()})
                         count += 1
-                updates_log += f"✅ تم التعرف واستيراد {count} درس ومحتوى.\n"
+                updates_log += f"✅ تم استيراد {count} درس ومحتوى.\n"
                 
             if df_q is not None:
                 await db.questions.delete_many({})
@@ -243,7 +253,7 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
                         await db.questions.insert_one({"category": cat_val, "lesson": les_val, "question": str(row[q_col]).strip(), "correct": str(row[ans_col]).strip(), "wrong": wrongs, "correct_answers": 0, "wrong_answers": 0})
                         count_q += 1
-                updates_log += f"✅ تم التعرف واستيراد {count_q} سؤال."
+                updates_log += f"✅ تم استيراد {count_q} سؤال."
 
             if not updates_log: return await msg.reply_text("⚠️ فشل الاستيراد: لم يتم العثور على أعمدة مطابقة.")
             await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
@@ -427,7 +437,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("الرجاء استخدام الأزرار أدناه 👇", reply_markup=kb)
 
 # ==========================================
-# 5. التفاعل مع الأزرار وإنشاء الروابط
+# 5. التفاعل مع الأزرار
 # ==========================================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

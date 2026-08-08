@@ -200,7 +200,7 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await db.library.delete_many({}) 
                 count = 0
                 skipped = 0
-                seen_links = set() # 🌟 المتتبع لتجنب التكرار في الإكسل 🌟
+                seen_links = set()
 
                 for _, row in df_lib.iterrows():
                     cat_col = next((c for c in df_lib.columns if 'السلسلة' in str(c)), None)
@@ -212,10 +212,9 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                         t_val = str(row.get(type_col, 'نص')).strip() if type_col and pd.notna(row.get(type_col)) else 'نص'
                         l_val = str(row.get(link_col, '')).strip() if link_col and pd.notna(row.get(link_col)) else None
                         
-                        # فلتر الروابط المكررة
                         if l_val and str(l_val).lower() not in ['', 'nan', 'none', 'null']:
                             link_str = str(l_val).strip()
-                            clean_id = link_str.split('/')[-1] if '/' in link_str else link_str # استخراج معرف الرسالة لمطابقته بذكاء
+                            clean_id = link_str.split('/')[-1] if '/' in link_str else link_str
                             if clean_id in seen_links:
                                 skipped += 1
                                 continue
@@ -276,7 +275,6 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 except Exception as e:
                     logging.error(f"Copy Error: {e}")
 
-        # 🌟 الفلتر الذكي لمنع الإضافة المكررة للروابط عبر تيليجرام 🌟
         if final_link:
             msg_id = final_link.split('/')[-1]
             existing = await db.library.find_one({"file_id": {"$regex": f"(^|/){msg_id}$"}})
@@ -438,15 +436,18 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
         if CHANNEL_ID:
             try:
-                await context.bot.send_poll(chat_id=CHANNEL_ID, question=temp_data["poll_q"], options=options, is_anonymous=False)
+                # 🌟 تم إصلاح هذا السطر ليتوافق مع شروط قنوات تيليجرام 🌟
+                await context.bot.send_poll(chat_id=CHANNEL_ID, question=temp_data["poll_q"], options=options, is_anonymous=True)
                 return await update.message.reply_text("🎉 **تم نشر الاستفتاء في القناة!**", reply_markup=kb)
-            except: return await update.message.reply_text("❌ حدث خطأ أثناء النشر.")
+            except Exception as e:
+                # رسالة خطأ مفصلة لتسهيل اكتشاف المشكلة إن حدثت
+                return await update.message.reply_text(f"❌ حدث خطأ أثناء النشر:\n`{e}`", parse_mode="Markdown")
         return await update.message.reply_text("⚠️ لم يتم إعداد معرف القناة.")
 
     await update.message.reply_text("الرجاء استخدام الأزرار أدناه 👇", reply_markup=kb)
 
 # ==========================================
-# 5. التفاعل مع الأزرار 
+# 5. التفاعل مع الأزرار وإنشاء الروابط
 # ==========================================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

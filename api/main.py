@@ -66,7 +66,7 @@ async def get_main_keyboard(user_id: str):
     return ReplyKeyboardMarkup([["🔍 اعرف الله"]], resize_keyboard=True)
 
 # ==========================================
-# 3. عرض تفاصيل الدرس
+# 3. عرض تفاصيل الدرس والوسائط
 # ==========================================
 async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None):
     if db is None: return
@@ -141,7 +141,7 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
         logging.error(f"UI Error: {e}")
 
 # ==========================================
-# 4. معالجة الرسائل العادية والملفات
+# 4. معالجة الرسائل والملفات
 # ==========================================
 async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -221,7 +221,8 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                     final_link = f"https://t.me/{channel_username}/{copied_msg.message_id}"
                 except: pass
             
-        pipeline = [{"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}]
+        # 🌟 جلب السلاسل مرتبة بالإدراج 🌟
+        pipeline = [{"$sort": {"_id": 1}}, {"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
         cats = await db.library.aggregate(pipeline).to_list(length=None)
         
         btns = []
@@ -260,16 +261,20 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == '🔍 اعرف الله':
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
-        if "categories" not in GLOBAL_CACHE: GLOBAL_CACHE["categories"] = await db.library.distinct("category")
+        
+        if "categories" not in GLOBAL_CACHE: 
+            pipeline = [{"$sort": {"_id": 1}}, {"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
+            cats = await db.library.aggregate(pipeline).to_list(length=None)
+            GLOBAL_CACHE["categories"] = [c["_id"] for c in cats if c["_id"] and str(c["_id"]).lower() != 'nan']
+        
         categories = GLOBAL_CACHE["categories"]
         if not categories: return await update.message.reply_text("📚 السلاسل قيد التجهيز.", reply_markup=kb)
-        btns = [[InlineKeyboardButton(f"📂 | {c}", callback_data=f"cat_{c[:25]}")] for c in categories]
         
+        btns = [[InlineKeyboardButton(f"📂 | {c}", callback_data=f"cat_{c[:25]}")] for c in categories]
         sent_msg = await update.message.reply_text("📚 **المشروع القرآني:**\nيرجى اختيار السلسلة المطلوبة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
-    # 🌟 لوحة الإدارة مع زر (إضافة أسئلة) 🌟
     if text == '⚙️ لوحة الإدارة' and await is_admin(user_id):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
         btns = [
@@ -316,7 +321,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user.get("state", "") if user else ""
     temp_data = user.get("temp_data", {}) if user else {}
 
-    # 🌟 استقبال إدخالات إضافة الأسئلة 🌟
     if state == "WAIT_Q_TEXT":
         temp_data["q_text"] = text
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_Q_CORRECT", "temp_data": temp_data}})
@@ -344,7 +348,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_cache()
         return await update.message.reply_text("🎉 **تم حفظ السؤال بنجاح!**\nيمكنك اختباره الآن من قسم (اعرف الله).", parse_mode="Markdown", reply_markup=kb)
 
-    # باقي الحالات
     if state == "WAIT_ADMIN_ID" and user_id == OWNER_ID:
         new_admin = text.strip()
         if not new_admin.isdigit():
@@ -424,22 +427,30 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "ignore": return 
     
-    # 🌟 أزرار إضافة الأسئلة يدوياً 🌟
     if data == "admin_add_q" and await is_admin(user_id):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_Q_CAT"}})
-        if "categories" not in GLOBAL_CACHE: GLOBAL_CACHE["categories"] = await db.library.distinct("category")
+        
+        if "categories" not in GLOBAL_CACHE: 
+            pipeline = [{"$sort": {"_id": 1}}, {"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
+            cats = await db.library.aggregate(pipeline).to_list(length=None)
+            GLOBAL_CACHE["categories"] = [c["_id"] for c in cats if c["_id"] and str(c["_id"]).lower() != 'nan']
+            
         btns = [[InlineKeyboardButton(f"📁 {c}", callback_data=f"qaddc_{c[:25]}")] for c in GLOBAL_CACHE["categories"]]
         btns.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_menu")])
         return await query.edit_message_text("📝 **إضافة سؤال جديد:**\nاختر السلسلة التي ينتمي إليها السؤال:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data.startswith("qaddc_"):
         cat_name = data.replace("qaddc_", "")
-        pipeline = [{"$match": {"category": {"$regex": f"^{cat_name}"}}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}]
+        
+        # 🌟 جلب الدروس مرتبة ترتيباً زمنياً للإضافة 🌟
+        pipeline = [{"$match": {"category": {"$regex": f"^{cat_name}"}}}, {"$sort": {"_id": 1}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
         lessons = await db.library.aggregate(pipeline).to_list(length=None)
         
-        btns = [[InlineKeyboardButton(f"📖 {les['_id'][:40]}", callback_data=f"qaddl_{str(les['doc_id'])}")] for les in lessons]
+        btns = []
+        for idx, les in enumerate(lessons, 1):
+            btns.append([InlineKeyboardButton(f"{idx}- 📖 {les['_id'][:35]}", callback_data=f"qaddl_{str(les['doc_id'])}")])
+            
         btns.append([InlineKeyboardButton("🔙 تراجع", callback_data="admin_add_q")])
-        
         await db.users.update_one({"_id": user_id}, {"$set": {"temp_data": {"q_cat": cat_name}}})
         return await query.edit_message_text(f"📁 السلسلة: **{cat_name}**\nاختر المحاضرة أو الدرس:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
@@ -503,13 +514,15 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         temp_data["category"] = cat_name
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "UPLOADING", "temp_data": temp_data}})
         
-        pipeline = [{"$match": {"category": cat_name}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}]
+        # 🌟 جلب الدروس مرتبة ترتيباً زمنياً للإضافة المباشرة 🌟
+        pipeline = [{"$match": {"category": cat_name}}, {"$sort": {"_id": 1}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
         lessons = await db.library.aggregate(pipeline).to_list(length=None)
         
         btns = []
-        for les in lessons:
+        for idx, les in enumerate(lessons, 1):
             if les['_id'] and str(les['_id']).lower() != 'nan':
-                btns.append([InlineKeyboardButton(f"📖 {les['_id'][:40]}", callback_data=f"ul_{str(les['doc_id'])}")])
+                btns.append([InlineKeyboardButton(f"{idx}- 📖 {les['_id'][:35]}", callback_data=f"ul_{str(les['doc_id'])}")])
+                
         btns.append([InlineKeyboardButton("➕ إضافة محاضرة جديدة", callback_data="ul_new")])
         btns.append([InlineKeyboardButton("❌ إلغاء العملية", callback_data="admin_cancel")])
         
@@ -534,7 +547,11 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await query.edit_message_text(f"🎉 **تم ربط الملف بنجاح!**\n\n📁 السلسلة: {cat_name}\n📖 المحاضرة: {lesson_name}", parse_mode="Markdown")
 
     if data == "main_menu":
-        if "categories" not in GLOBAL_CACHE: GLOBAL_CACHE["categories"] = await db.library.distinct("category")
+        if "categories" not in GLOBAL_CACHE: 
+            pipeline = [{"$sort": {"_id": 1}}, {"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
+            cats = await db.library.aggregate(pipeline).to_list(length=None)
+            GLOBAL_CACHE["categories"] = [c["_id"] for c in cats if c["_id"] and str(c["_id"]).lower() != 'nan']
+            
         btns = [[InlineKeyboardButton(f"📂 | {c}", callback_data=f"cat_{c[:25]}")] for c in GLOBAL_CACHE["categories"]]
         return await query.edit_message_text("📚 **المشروع القرآني:**\nيرجى اختيار السلسلة المطلوبة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
@@ -552,10 +569,14 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         cache_key = f"cat_les_{cat_name}"
         if cache_key not in GLOBAL_CACHE:
-            pipeline = [{"$match": {"category": {"$regex": f"^{cat_name}"}}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}]
+            # 🌟 جلب الدروس بترتيب زمني وعرضها كأزرار مرقمة 🌟
+            pipeline = [{"$match": {"category": {"$regex": f"^{cat_name}"}}}, {"$sort": {"_id": 1}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
             GLOBAL_CACHE[cache_key] = await db.library.aggregate(pipeline).to_list(length=None)
         
-        btns = [[InlineKeyboardButton(f"📖 | {les['_id']}", callback_data=f"les_{str(les['doc_id'])}")] for les in GLOBAL_CACHE[cache_key]]
+        btns = []
+        for idx, les in enumerate(GLOBAL_CACHE[cache_key], 1):
+            btns.append([InlineKeyboardButton(f"{idx}- 📖 | {les['_id'][:40]}", callback_data=f"les_{str(les['doc_id'])}")])
+            
         btns.append([InlineKeyboardButton("🔙 العودة للرئيسية", callback_data="main_menu")])
         return await query.edit_message_text(f"📂 **السلسلة:**\nاختر المحاضرة أو الدرس المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 

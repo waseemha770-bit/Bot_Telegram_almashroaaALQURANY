@@ -66,8 +66,31 @@ async def get_main_keyboard(user_id: str):
     return ReplyKeyboardMarkup([["🔍 اعرف الله"]], resize_keyboard=True)
 
 # ==========================================
-# 3. عرض تفاصيل الدرس والوسائط
+# 3. عرض تفاصيل الدرس ومحرك التحليلات
 # ==========================================
+async def background_db_update(user_id, q_id=None, is_correct=None, lesson_view=None, cat_view=None):
+    """🚀 محرك التحليلات الخفي: يسجل النشاط والمشاهدات والأخطاء دون إبطاء المستخدم"""
+    if db is None: return
+    try:
+        # تسجيل الطالب كـ "نشط"
+        await db.users.update_one({"_id": str(user_id)}, {"$set": {"last_active": time.time()}}, upsert=True)
+        
+        # تسجيل إجابات الاختبارات
+        if q_id and is_correct is not None:
+            await db.users.update_one({"_id": str(user_id)}, {"$push": {"answered": str(q_id)}})
+            inc_field = "correct_answers" if is_correct else "wrong_answers"
+            await db.questions.update_one({"_id": ObjectId(q_id)}, {"$inc": {inc_field: 1}})
+            
+        # تسجيل مشاهدات الدروس
+        if lesson_view and cat_view:
+            await db.lesson_stats.update_one(
+                {"lesson": lesson_view, "category": cat_view},
+                {"$inc": {"views": 1}},
+                upsert=True
+            )
+    except Exception as e:
+        logging.error(f"Analytics Error: {e}")
+
 async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None):
     if db is None: return
 
@@ -84,6 +107,10 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
 
     lesson_title = doc.get("lesson", "بدون عنوان")
     series = doc.get("category", "عام")
+    
+    # تسجيل مشاهدة للدرس في الخلفية
+    if user_id:
+        asyncio.create_task(background_db_update(user_id, lesson_view=lesson_title, cat_view=series))
     
     cache_key = f"items_{lesson_title}"
     if cache_key not in GLOBAL_CACHE:
@@ -193,7 +220,9 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                             "lesson": str(row.get('المحاضرة /الدرس', 'عام')).strip(),
                             "question": str(row['السؤال']).strip(),
                             "correct": str(row['الإجابة_الصحيحة']).strip(),
-                            "wrong": wrongs
+                            "wrong": wrongs,
+                            "correct_answers": 0,
+                            "wrong_answers": 0
                         })
                         count_q += 1
                 updates_log += f"✅ تم استيراد {count_q} سؤال."
@@ -221,7 +250,6 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                     final_link = f"https://t.me/{channel_username}/{copied_msg.message_id}"
                 except: pass
             
-        # 🌟 جلب السلاسل مرتبة بالإدراج 🌟
         pipeline = [{"$sort": {"_id": 1}}, {"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
         cats = await db.library.aggregate(pipeline).to_list(length=None)
         
@@ -244,6 +272,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await check_spam(user_id): return
     if db is None: return await update.message.reply_text("⚠️ خطأ في الاتصال بقاعدة البيانات.")
 
+    # تسجيل الطالب كنشط بمجرد إرسال أي رسالة
+    asyncio.create_task(background_db_update(user_id))
+
     kb = await get_main_keyboard(user_id)
     
     if text in ['إلغاء', '❌ إلغاء', '/cancel']:
@@ -261,12 +292,11 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == '🔍 اعرف الله':
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
-        
         if "categories" not in GLOBAL_CACHE: 
             pipeline = [{"$sort": {"_id": 1}}, {"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
             cats = await db.library.aggregate(pipeline).to_list(length=None)
             GLOBAL_CACHE["categories"] = [c["_id"] for c in cats if c["_id"] and str(c["_id"]).lower() != 'nan']
-        
+            
         categories = GLOBAL_CACHE["categories"]
         if not categories: return await update.message.reply_text("📚 السلاسل قيد التجهيز.", reply_markup=kb)
         
@@ -275,11 +305,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
+    # 🌟 إضافة زر الإحصائيات للوحة الإدارة 🌟
     if text == '⚙️ لوحة الإدارة' and await is_admin(user_id):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
         btns = [
             [InlineKeyboardButton("➕ إضافة سؤال لدرس", callback_data="admin_add_q")],
-            [InlineKeyboardButton("📊 إنشاء استفتاء للقناة", callback_data="admin_poll")]
+            [InlineKeyboardButton("📊 إنشاء استفتاء للقناة", callback_data="admin_poll")],
+            [InlineKeyboardButton("📈 تقرير الإحصائيات الشامل", callback_data="admin_stats")]
         ]
         if user_id == OWNER_ID:
             btns.append([InlineKeyboardButton("👥 إدارة المشرفين", callback_data="admin_manage")])
@@ -342,7 +374,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "lesson": temp_data.get("q_les"), 
             "question": temp_data.get("q_text"), 
             "correct": temp_data.get("q_correct"), 
-            "wrong": wrongs
+            "wrong": wrongs,
+            "correct_answers": 0,
+            "wrong_answers": 0
         })
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
         clear_cache()
@@ -397,11 +431,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("الرجاء استخدام الأزرار أدناه 👇", reply_markup=kb)
 
 # ==========================================
-# 5. التفاعل السريع مع الأزرار الشفافة
+# 5. التفاعل مع الأزرار وإنشاء التقارير
 # ==========================================
-async def background_db_update(user_id, q_id):
-    if db is not None: await db.users.update_one({"_id": str(user_id)}, {"$push": {"answered": str(q_id)}})
-
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id, user_id = query.message.chat_id, str(query.from_user.id)
@@ -427,9 +458,86 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "ignore": return 
     
+    # 🌟 إنشاء تقرير الإحصائيات الشامل 🌟
+    if data == "admin_stats" and await is_admin(user_id):
+        await query.edit_message_text("⏳ جاري تحليل البيانات وتوليد التقرير الشامل، يرجى الانتظار...")
+        try:
+            # 1. إحصائيات الطلاب
+            total_users = await db.users.count_documents({})
+            active_users = await db.users.count_documents({"last_active": {"$gte": time.time() - 7*86400}}) # نشط في آخر 7 أيام
+            
+            # 2. الدروس الأكثر مشاهدة
+            top_lessons = await db.lesson_stats.find().sort("views", -1).limit(50).to_list(length=None)
+            
+            # 3. الأسئلة الأكثر خطأ
+            pipeline = [
+                {"$match": {"wrong_answers": {"$gt": 0}}},
+                {"$addFields": {"total_answers": {"$add": [{"$ifNull": ["$correct_answers", 0]}, "$wrong_answers"]}}},
+                {"$sort": {"wrong_answers": -1}},
+                {"$limit": 50}
+            ]
+            top_wrong_qs = await db.questions.aggregate(pipeline).to_list(length=None)
+            
+            # بناء ملف الإكسل
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # الورقة الأولى: الملخص
+                df_summary = pd.DataFrame([{
+                    "إجمالي الطلاب المسجلين": total_users,
+                    "الطلاب النشطين (آخر 7 أيام)": active_users,
+                    "تاريخ التقرير": time.strftime("%Y-%m-%d %H:%M:%S")
+                }])
+                df_summary.to_excel(writer, sheet_name='ملخص النشاط', index=False)
+                
+                # الورقة الثانية: الدروس
+                if top_lessons:
+                    df_lessons = pd.DataFrame(top_lessons)
+                    df_lessons = df_lessons.rename(columns={"category": "السلسلة", "lesson": "الدرس/المحاضرة", "views": "عدد المشاهدات"})
+                    df_lessons = df_lessons[["السلسلة", "الدرس/المحاضرة", "عدد المشاهدات"]]
+                    df_lessons.to_excel(writer, sheet_name='الدروس الأكثر مشاهدة', index=False)
+                else:
+                    pd.DataFrame(columns=["السلسلة", "الدرس/المحاضرة", "عدد المشاهدات"]).to_excel(writer, sheet_name='الدروس الأكثر مشاهدة', index=False)
+                    
+                # الورقة الثالثة: الأسئلة
+                if top_wrong_qs:
+                    q_list = [{"السلسلة": q.get("category", "عام"), "الدرس": q.get("lesson", "عام"), "السؤال": q.get("question", ""), "الإجابات الخاطئة": q.get("wrong_answers", 0), "الإجابات الصحيحة": q.get("correct_answers", 0), "إجمالي الإجابات": q.get("total_answers", 0)} for q in top_wrong_qs]
+                    pd.DataFrame(q_list).to_excel(writer, sheet_name='الأسئلة الأكثر خطأ', index=False)
+                else:
+                    pd.DataFrame(columns=["السلسلة", "الدرس", "السؤال", "الإجابات الخاطئة", "الإجابات الصحيحة", "إجمالي الإجابات"]).to_excel(writer, sheet_name='الأسئلة الأكثر خطأ', index=False)
+                    
+            output.seek(0)
+            await query.message.delete()
+            await context.bot.send_document(chat_id=chat_id, document=output, filename="تقرير_إحصائيات_المنصة.xlsx", caption="📊 **تقرير الإحصائيات الشامل للمنصة**\nيتضمن ملخص الطلاب، أكثر الدروس طلباً، وأكثر الأسئلة التي يخطئ فيها الطلاب.", parse_mode="Markdown")
+            
+            # إعادة إرسال لوحة الإدارة
+            btns = [
+                [InlineKeyboardButton("➕ إضافة سؤال لدرس", callback_data="admin_add_q")],
+                [InlineKeyboardButton("📊 إنشاء استفتاء للقناة", callback_data="admin_poll")],
+                [InlineKeyboardButton("📈 تقرير الإحصائيات الشامل", callback_data="admin_stats")]
+            ]
+            if user_id == OWNER_ID: btns.append([InlineKeyboardButton("👥 إدارة المشرفين", callback_data="admin_manage")])
+            btns.append([InlineKeyboardButton("❌ إغلاق", callback_data="admin_cancel")])
+            sent_msg = await context.bot.send_message(chat_id=chat_id, text="⚙️ **لوحة التحكم والإدارة:**\nاختر الإجراء المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+            await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
+            
+        except Exception as e:
+            logging.error(f"Stats Error: {e}")
+            await context.bot.send_message(chat_id=chat_id, text="❌ حدث خطأ أثناء توليد التقرير.")
+        return
+
+    if data == "admin_menu" and await is_admin(user_id):
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
+        btns = [
+            [InlineKeyboardButton("➕ إضافة سؤال لدرس", callback_data="admin_add_q")],
+            [InlineKeyboardButton("📊 إنشاء استفتاء للقناة", callback_data="admin_poll")],
+            [InlineKeyboardButton("📈 تقرير الإحصائيات الشامل", callback_data="admin_stats")]
+        ]
+        if user_id == OWNER_ID: btns.append([InlineKeyboardButton("👥 إدارة المشرفين", callback_data="admin_manage")])
+        btns.append([InlineKeyboardButton("❌ إغلاق", callback_data="admin_cancel")])
+        return await query.edit_message_text("⚙️ **لوحة التحكم والإدارة:**\nاختر الإجراء المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+
     if data == "admin_add_q" and await is_admin(user_id):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_Q_CAT"}})
-        
         if "categories" not in GLOBAL_CACHE: 
             pipeline = [{"$sort": {"_id": 1}}, {"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
             cats = await db.library.aggregate(pipeline).to_list(length=None)
@@ -441,8 +549,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("qaddc_"):
         cat_name = data.replace("qaddc_", "")
-        
-        # 🌟 جلب الدروس مرتبة ترتيباً زمنياً للإضافة 🌟
         pipeline = [{"$match": {"category": {"$regex": f"^{cat_name}"}}}, {"$sort": {"_id": 1}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
         lessons = await db.library.aggregate(pipeline).to_list(length=None)
         
@@ -465,16 +571,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_Q_TEXT", "temp_data": temp_data}})
         return await query.edit_message_text(f"📖 المحاضرة: **{lesson_name}**\n\n✍️ أرسل الآن **نص السؤال** كتابةً:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
-
-    if data == "admin_menu" and await is_admin(user_id):
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
-        btns = [
-            [InlineKeyboardButton("➕ إضافة سؤال لدرس", callback_data="admin_add_q")],
-            [InlineKeyboardButton("📊 إنشاء استفتاء للقناة", callback_data="admin_poll")]
-        ]
-        if user_id == OWNER_ID: btns.append([InlineKeyboardButton("👥 إدارة المشرفين", callback_data="admin_manage")])
-        btns.append([InlineKeyboardButton("❌ إغلاق", callback_data="admin_cancel")])
-        return await query.edit_message_text("⚙️ **لوحة التحكم والإدارة:**\nاختر الإجراء المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data == "admin_poll" and await is_admin(user_id):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_POLL_Q"}}, upsert=True)
@@ -514,7 +610,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         temp_data["category"] = cat_name
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "UPLOADING", "temp_data": temp_data}})
         
-        # 🌟 جلب الدروس مرتبة ترتيباً زمنياً للإضافة المباشرة 🌟
         pipeline = [{"$match": {"category": cat_name}}, {"$sort": {"_id": 1}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
         lessons = await db.library.aggregate(pipeline).to_list(length=None)
         
@@ -569,7 +664,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         cache_key = f"cat_les_{cat_name}"
         if cache_key not in GLOBAL_CACHE:
-            # 🌟 جلب الدروس بترتيب زمني وعرضها كأزرار مرقمة 🌟
             pipeline = [{"$match": {"category": {"$regex": f"^{cat_name}"}}}, {"$sort": {"_id": 1}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
             GLOBAL_CACHE[cache_key] = await db.library.aggregate(pipeline).to_list(length=None)
         
@@ -581,7 +675,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await query.edit_message_text(f"📂 **السلسلة:**\nاختر المحاضرة أو الدرس المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data.startswith("les_"):
-        return await show_lesson_ui(context, chat_id, data.replace("les_", ""), message_id=query.message.message_id)
+        return await show_lesson_ui(context, chat_id, data.replace("les_", ""), message_id=query.message.message_id, user_id=user_id)
 
     if data.startswith("quizles_"):
         try: await context.bot.answer_callback_query(query.id, "🚀 جاري التجهيز...", show_alert=False)
@@ -611,7 +705,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_kb.append(new_row)
             
         await query.edit_message_reply_markup(InlineKeyboardMarkup(new_kb))
-        asyncio.create_task(background_db_update(user_id, q_id))
+        asyncio.create_task(background_db_update(user_id, q_id=q_id, is_correct=is_correct))
         return
 
 async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, back_doc_id=None):

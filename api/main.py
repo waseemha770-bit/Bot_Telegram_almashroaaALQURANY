@@ -66,28 +66,18 @@ async def get_main_keyboard(user_id: str):
     return ReplyKeyboardMarkup([["🔍 اعرف الله"]], resize_keyboard=True)
 
 # ==========================================
-# 3. عرض تفاصيل الدرس ومحرك التحليلات
+# 3. عرض تفاصيل الدرس والتحليلات
 # ==========================================
 async def background_db_update(user_id, q_id=None, is_correct=None, lesson_view=None, cat_view=None):
-    """🚀 محرك التحليلات الخفي: يسجل النشاط والمشاهدات والأخطاء دون إبطاء المستخدم"""
     if db is None: return
     try:
-        # تسجيل الطالب كـ "نشط"
         await db.users.update_one({"_id": str(user_id)}, {"$set": {"last_active": time.time()}}, upsert=True)
-        
-        # تسجيل إجابات الاختبارات
         if q_id and is_correct is not None:
             await db.users.update_one({"_id": str(user_id)}, {"$push": {"answered": str(q_id)}})
             inc_field = "correct_answers" if is_correct else "wrong_answers"
             await db.questions.update_one({"_id": ObjectId(q_id)}, {"$inc": {inc_field: 1}})
-            
-        # تسجيل مشاهدات الدروس
         if lesson_view and cat_view:
-            await db.lesson_stats.update_one(
-                {"lesson": lesson_view, "category": cat_view},
-                {"$inc": {"views": 1}},
-                upsert=True
-            )
+            await db.lesson_stats.update_one({"lesson": lesson_view, "category": cat_view}, {"$inc": {"views": 1}}, upsert=True)
     except Exception as e:
         logging.error(f"Analytics Error: {e}")
 
@@ -108,9 +98,7 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
     lesson_title = doc.get("lesson", "بدون عنوان")
     series = doc.get("category", "عام")
     
-    # تسجيل مشاهدة للدرس في الخلفية
-    if user_id:
-        asyncio.create_task(background_db_update(user_id, lesson_view=lesson_title, cat_view=series))
+    if user_id: asyncio.create_task(background_db_update(user_id, lesson_view=lesson_title, cat_view=series))
     
     cache_key = f"items_{lesson_title}"
     if cache_key not in GLOBAL_CACHE:
@@ -127,8 +115,7 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
         safe_link = None
         if pd.notna(f_link) and str(f_link).strip().lower() not in ['', 'nan', 'none', 'null', 'لا يوجد']:
             safe_link = str(f_link).strip().replace(" ", "")
-            if not safe_link.startswith('http'): 
-                safe_link = f"https://{safe_link}"
+            if not safe_link.startswith('http'): safe_link = f"https://{safe_link}"
 
         if safe_link:
             if "فيديو" in f_type: links["فيديو"] = safe_link
@@ -146,11 +133,9 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
     ]
 
     btns.append([InlineKeyboardButton("✨ 📝 ابدأ اختبار الدرس الآن ✨", callback_data=f"quizles_{doc_id}")])
-    
     bot_username = context.bot.username
     share_url = f"https://t.me/share/url?text=📚 إليك هذا الدرس القيم: {lesson_title}\n&url=https://t.me/{bot_username}?start=les_{doc_id}"
     btns.append([InlineKeyboardButton("🔗 شارك هذا الدرس (لتعم الفائدة)", url=share_url)])
-    
     btns.append([
         InlineKeyboardButton("🔙 رجوع للسلسلة", callback_data=f"cat_{series[:25]}"),
         InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")
@@ -159,8 +144,7 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
     txt = f"📖 **{lesson_title}**\n📂 السلسلة: {series}\n\n👇 اختر المحتوى للانتقال إليه:"
     
     try:
-        if message_id: 
-            await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+        if message_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
         else: 
             sent_msg = await context.bot.send_message(chat_id, txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
             if user_id: await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
@@ -168,7 +152,7 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
         logging.error(f"UI Error: {e}")
 
 # ==========================================
-# 4. معالجة الرسائل والملفات
+# 4. معالجة الرسائل واستيراد الإكسل الذكي
 # ==========================================
 async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -183,49 +167,83 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not msg.document.file_name.endswith(('.xlsx', '.xls')):
             return await msg.reply_text("⚠️ يرجى رفع ملف بصيغة Excel (.xlsx) فقط.")
         
-        await msg.reply_text("⏳ جاري تحليل ملف الإكسل وتحديث قاعدة البيانات...")
+        await msg.reply_text("⏳ جاري تحليل ملف الإكسل والتعرف على الشيتات تلقائياً...")
         try:
             file = await context.bot.get_file(msg.document.file_id)
             byte_array = await file.download_as_bytearray()
             xls = pd.ExcelFile(io.BytesIO(byte_array))
             
             updates_log = ""
-            if 'المشروع القرأني' in xls.sheet_names:
-                df_lib = pd.read_excel(xls, sheet_name='المشروع القرأني')
+            df_lib = None
+            df_q = None
+
+            # 🌟 خوارزمية التعرف التلقائي على الشيتات 🌟
+            for sheet in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet)
+                cols = [str(c).strip() for c in df.columns]
+                
+                if any('السؤال' in c for c in cols) and any('الصحيح' in c for c in cols):
+                    df_q = df
+                elif any('السلسلة' in c for c in cols) and any('الدرس' in c or 'المحاضرة' in c for c in cols):
+                    df_lib = df
+
+            # معالجة شيت الدروس والمحتوى
+            if df_lib is not None:
                 await db.library.delete_many({}) 
                 count = 0
                 for _, row in df_lib.iterrows():
-                    if pd.notna(row.get('المحاضرة /الدرس')) and pd.notna(row.get('السلسلة')):
+                    cat_col = next((c for c in df_lib.columns if 'السلسلة' in str(c)), None)
+                    les_col = next((c for c in df_lib.columns if 'الدرس' in str(c) or 'المحاضرة' in str(c)), None)
+                    type_col = next((c for c in df_lib.columns if 'النوع' in str(c)), None)
+                    link_col = next((c for c in df_lib.columns if 'الرابط' in str(c)), None)
+
+                    if les_col and cat_col and pd.notna(row.get(les_col)) and pd.notna(row.get(cat_col)):
+                        t_val = str(row.get(type_col, 'نص')).strip() if type_col and pd.notna(row.get(type_col)) else 'نص'
+                        l_val = str(row.get(link_col, '')).strip() if link_col and pd.notna(row.get(link_col)) else None
+                        
                         await db.library.insert_one({
-                            "category": str(row['السلسلة']).strip(),
-                            "lesson": str(row['المحاضرة /الدرس']).strip(),
-                            "type": str(row.get('النوع', 'نص')).strip() if pd.notna(row.get('النوع')) else 'نص',
-                            "file_id": str(row.get('الرابط', '')).strip() if pd.notna(row.get('الرابط')) else None,
+                            "category": str(row[cat_col]).strip(),
+                            "lesson": str(row[les_col]).strip(),
+                            "type": t_val,
+                            "file_id": l_val,
                             "created_at": time.time()
                         })
                         count += 1
-                updates_log += f"✅ تم استيراد {count} درس ومحتوى.\n"
+                updates_log += f"✅ تم التعرف واستيراد {count} درس ومحتوى.\n"
                 
-            if 'قيم_نفسك' in xls.sheet_names:
-                df_q = pd.read_excel(xls, sheet_name='قيم_نفسك')
+            # معالجة شيت الأسئلة والاختبارات
+            if df_q is not None:
                 await db.questions.delete_many({})
                 count_q = 0
                 for _, row in df_q.iterrows():
-                    if pd.notna(row.get('السؤال')) and pd.notna(row.get('الإجابة_الصحيحة')):
+                    q_col = next((c for c in df_q.columns if 'السؤال' in str(c)), None)
+                    ans_col = next((c for c in df_q.columns if 'الصحيح' in str(c)), None)
+                    cat_col = next((c for c in df_q.columns if 'السلسلة' in str(c)), None)
+                    les_col = next((c for c in df_q.columns if 'الدرس' in str(c) or 'المحاضرة' in str(c)), None)
+                    
+                    if q_col and ans_col and pd.notna(row.get(q_col)) and pd.notna(row.get(ans_col)):
                         wrongs = []
-                        if pd.notna(row.get('الإجابة_الخاطئة_1')): wrongs.append(str(row['الإجابة_الخاطئة_1']))
-                        if pd.notna(row.get('الإجابة_الخاطئة_2')): wrongs.append(str(row['الإجابة_الخاطئة_2']))
+                        wrong_cols = [c for c in df_q.columns if 'خاطئة' in str(c) or 'خطأ' in str(c)]
+                        for wc in wrong_cols:
+                            if pd.notna(row.get(wc)): wrongs.append(str(row[wc]).strip())
+                        
+                        cat_val = str(row.get(cat_col, 'عام')).strip() if cat_col and pd.notna(row.get(cat_col)) else 'عام'
+                        les_val = str(row.get(les_col, 'عام')).strip() if les_col and pd.notna(row.get(les_col)) else 'عام'
+
                         await db.questions.insert_one({
-                            "category": str(row.get('السلسلة', 'عام')).strip(),
-                            "lesson": str(row.get('المحاضرة /الدرس', 'عام')).strip(),
-                            "question": str(row['السؤال']).strip(),
-                            "correct": str(row['الإجابة_الصحيحة']).strip(),
+                            "category": cat_val,
+                            "lesson": les_val,
+                            "question": str(row[q_col]).strip(),
+                            "correct": str(row[ans_col]).strip(),
                             "wrong": wrongs,
                             "correct_answers": 0,
                             "wrong_answers": 0
                         })
                         count_q += 1
-                updates_log += f"✅ تم استيراد {count_q} سؤال."
+                updates_log += f"✅ تم التعرف واستيراد {count_q} سؤال."
+
+            if not updates_log:
+                return await msg.reply_text("⚠️ فشل الاستيراد: لم يتم العثور على أعمدة مطابقة للدروس أو الأسئلة في هذا الملف.")
 
             await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
             clear_cache() 
@@ -272,9 +290,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await check_spam(user_id): return
     if db is None: return await update.message.reply_text("⚠️ خطأ في الاتصال بقاعدة البيانات.")
 
-    # تسجيل الطالب كنشط بمجرد إرسال أي رسالة
     asyncio.create_task(background_db_update(user_id))
-
     kb = await get_main_keyboard(user_id)
     
     if text in ['إلغاء', '❌ إلغاء', '/cancel']:
@@ -305,7 +321,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
-    # 🌟 إضافة زر الإحصائيات للوحة الإدارة 🌟
     if text == '⚙️ لوحة الإدارة' and await is_admin(user_id):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
         btns = [
@@ -324,7 +339,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == '📥 استيراد إكسل' and await is_admin(user_id):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
         btns = [[InlineKeyboardButton("✅ نعم، متأكد", callback_data="import_confirm")], [InlineKeyboardButton("❌ الإلغاء", callback_data="admin_cancel")]]
-        sent_msg = await update.message.reply_text("⚠️ سيتم مسح البيانات القديمة. هل أنت متأكد؟", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        sent_msg = await update.message.reply_text("⚠️ سيتم مسح البيانات القديمة.\n(تلميح: سيتعرف البوت على الشيتات تلقائياً من محتواها).\nهل أنت متأكد من رغبتك بالاستمرار؟", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
@@ -431,7 +446,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("الرجاء استخدام الأزرار أدناه 👇", reply_markup=kb)
 
 # ==========================================
-# 5. التفاعل مع الأزرار وإنشاء التقارير
+# 5. التفاعل مع الأزرار
 # ==========================================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -458,68 +473,40 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "ignore": return 
     
-    # 🌟 إنشاء تقرير الإحصائيات الشامل 🌟
     if data == "admin_stats" and await is_admin(user_id):
         await query.edit_message_text("⏳ جاري تحليل البيانات وتوليد التقرير الشامل، يرجى الانتظار...")
         try:
-            # 1. إحصائيات الطلاب
             total_users = await db.users.count_documents({})
-            active_users = await db.users.count_documents({"last_active": {"$gte": time.time() - 7*86400}}) # نشط في آخر 7 أيام
-            
-            # 2. الدروس الأكثر مشاهدة
+            active_users = await db.users.count_documents({"last_active": {"$gte": time.time() - 7*86400}})
             top_lessons = await db.lesson_stats.find().sort("views", -1).limit(50).to_list(length=None)
-            
-            # 3. الأسئلة الأكثر خطأ
-            pipeline = [
-                {"$match": {"wrong_answers": {"$gt": 0}}},
-                {"$addFields": {"total_answers": {"$add": [{"$ifNull": ["$correct_answers", 0]}, "$wrong_answers"]}}},
-                {"$sort": {"wrong_answers": -1}},
-                {"$limit": 50}
-            ]
+            pipeline = [{"$match": {"wrong_answers": {"$gt": 0}}}, {"$addFields": {"total_answers": {"$add": [{"$ifNull": ["$correct_answers", 0]}, "$wrong_answers"]}}}, {"$sort": {"wrong_answers": -1}}, {"$limit": 50}]
             top_wrong_qs = await db.questions.aggregate(pipeline).to_list(length=None)
             
-            # بناء ملف الإكسل
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # الورقة الأولى: الملخص
-                df_summary = pd.DataFrame([{
-                    "إجمالي الطلاب المسجلين": total_users,
-                    "الطلاب النشطين (آخر 7 أيام)": active_users,
-                    "تاريخ التقرير": time.strftime("%Y-%m-%d %H:%M:%S")
-                }])
+                df_summary = pd.DataFrame([{"إجمالي الطلاب المسجلين": total_users, "الطلاب النشطين (آخر 7 أيام)": active_users, "تاريخ التقرير": time.strftime("%Y-%m-%d %H:%M:%S")}])
                 df_summary.to_excel(writer, sheet_name='ملخص النشاط', index=False)
                 
-                # الورقة الثانية: الدروس
                 if top_lessons:
                     df_lessons = pd.DataFrame(top_lessons)
-                    df_lessons = df_lessons.rename(columns={"category": "السلسلة", "lesson": "الدرس/المحاضرة", "views": "عدد المشاهدات"})
-                    df_lessons = df_lessons[["السلسلة", "الدرس/المحاضرة", "عدد المشاهدات"]]
+                    df_lessons = df_lessons.rename(columns={"category": "السلسلة", "lesson": "الدرس/المحاضرة", "views": "عدد المشاهدات"})[["السلسلة", "الدرس/المحاضرة", "عدد المشاهدات"]]
                     df_lessons.to_excel(writer, sheet_name='الدروس الأكثر مشاهدة', index=False)
-                else:
-                    pd.DataFrame(columns=["السلسلة", "الدرس/المحاضرة", "عدد المشاهدات"]).to_excel(writer, sheet_name='الدروس الأكثر مشاهدة', index=False)
+                else: pd.DataFrame(columns=["السلسلة", "الدرس/المحاضرة", "عدد المشاهدات"]).to_excel(writer, sheet_name='الدروس الأكثر مشاهدة', index=False)
                     
-                # الورقة الثالثة: الأسئلة
                 if top_wrong_qs:
                     q_list = [{"السلسلة": q.get("category", "عام"), "الدرس": q.get("lesson", "عام"), "السؤال": q.get("question", ""), "الإجابات الخاطئة": q.get("wrong_answers", 0), "الإجابات الصحيحة": q.get("correct_answers", 0), "إجمالي الإجابات": q.get("total_answers", 0)} for q in top_wrong_qs]
                     pd.DataFrame(q_list).to_excel(writer, sheet_name='الأسئلة الأكثر خطأ', index=False)
-                else:
-                    pd.DataFrame(columns=["السلسلة", "الدرس", "السؤال", "الإجابات الخاطئة", "الإجابات الصحيحة", "إجمالي الإجابات"]).to_excel(writer, sheet_name='الأسئلة الأكثر خطأ', index=False)
+                else: pd.DataFrame(columns=["السلسلة", "الدرس", "السؤال", "الإجابات الخاطئة", "الإجابات الصحيحة", "إجمالي الإجابات"]).to_excel(writer, sheet_name='الأسئلة الأكثر خطأ', index=False)
                     
             output.seek(0)
             await query.message.delete()
             await context.bot.send_document(chat_id=chat_id, document=output, filename="تقرير_إحصائيات_المنصة.xlsx", caption="📊 **تقرير الإحصائيات الشامل للمنصة**\nيتضمن ملخص الطلاب، أكثر الدروس طلباً، وأكثر الأسئلة التي يخطئ فيها الطلاب.", parse_mode="Markdown")
             
-            # إعادة إرسال لوحة الإدارة
-            btns = [
-                [InlineKeyboardButton("➕ إضافة سؤال لدرس", callback_data="admin_add_q")],
-                [InlineKeyboardButton("📊 إنشاء استفتاء للقناة", callback_data="admin_poll")],
-                [InlineKeyboardButton("📈 تقرير الإحصائيات الشامل", callback_data="admin_stats")]
-            ]
+            btns = [[InlineKeyboardButton("➕ إضافة سؤال لدرس", callback_data="admin_add_q")], [InlineKeyboardButton("📊 إنشاء استفتاء للقناة", callback_data="admin_poll")], [InlineKeyboardButton("📈 تقرير الإحصائيات الشامل", callback_data="admin_stats")]]
             if user_id == OWNER_ID: btns.append([InlineKeyboardButton("👥 إدارة المشرفين", callback_data="admin_manage")])
             btns.append([InlineKeyboardButton("❌ إغلاق", callback_data="admin_cancel")])
             sent_msg = await context.bot.send_message(chat_id=chat_id, text="⚙️ **لوحة التحكم والإدارة:**\nاختر الإجراء المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
             await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
-            
         except Exception as e:
             logging.error(f"Stats Error: {e}")
             await context.bot.send_message(chat_id=chat_id, text="❌ حدث خطأ أثناء توليد التقرير.")
@@ -657,7 +644,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "import_confirm":
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_EXCEL"}}, upsert=True)
-        return await query.edit_message_text("📥 **أرسل ملف الإكسل (.xlsx) الآن...**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
+        return await query.edit_message_text("📥 **أرسل ملف الإكسل (.xlsx) الآن...**\nسيتعرف البوت على الشيتات تلقائياً.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
 
     if data.startswith("cat_"):
         cat_name = data.replace("cat_", "")

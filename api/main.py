@@ -33,7 +33,6 @@ if MONGODB_URI:
     except Exception as e:
         logging.error(f"Error connecting to MongoDB: {e}")
 
-# 🚀 ذاكرة الكاش السريعة لتجاوز بطء قاعدة البيانات
 GLOBAL_CACHE = {}
 
 def clear_cache():
@@ -44,7 +43,7 @@ user_last_action = {}
 async def check_spam(user_id: str) -> bool:
     now = time.time()
     last = user_last_action.get(user_id, 0)
-    if now - last < 0.25: return True  # استجابة سريعة جداً
+    if now - last < 0.25: return True
     user_last_action[user_id] = now
     return False
 
@@ -67,7 +66,7 @@ async def get_main_keyboard(user_id: str):
     return ReplyKeyboardMarkup([["🔍 اعرف الله"]], resize_keyboard=True)
 
 # ==========================================
-# 3. عرض تفاصيل الدرس (وتثبيت الأزرار الأربعة بأمان)
+# 3. عرض تفاصيل الدرس والوسائط
 # ==========================================
 async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
     if db is None: return
@@ -86,7 +85,6 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
     lesson_title = doc.get("lesson", "بدون عنوان")
     series = doc.get("category", "عام")
     
-    # جلب المحتويات من الكاش للسرعة الفائقة
     cache_key = f"items_{lesson_title}"
     if cache_key not in GLOBAL_CACHE:
         cursor = db.library.find({"lesson": lesson_title})
@@ -95,7 +93,6 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
     
     links = {"فيديو": None, "نص": None, "صوت": None, "صور": None}
     
-    # 🛡️ فلترة الروابط التالفة لحماية واجهة تيليجرام من التعطل
     for item in items:
         f_type = str(item.get("type", "نص"))
         f_link = item.get("file_id")
@@ -105,7 +102,6 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
             safe_link = str(f_link).strip().replace(" ", "")
             if not safe_link.startswith('http'): 
                 safe_link = f"https://{safe_link}"
-            if "." not in safe_link: safe_link = None # التأكد من أنه رابط حقيقي
 
         if safe_link:
             if "فيديو" in f_type: links["فيديو"] = safe_link
@@ -113,12 +109,10 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
             elif "صور" in f_type or "صوره" in f_type: links["صور"] = safe_link
             else: links["نص"] = safe_link
 
-    # دالة ذكية لإنشاء الأزرار بشكل ثابت مهما كان محتوى الإكسل
     def make_btn(text, link):
         if link: return InlineKeyboardButton(text, url=link)
         return InlineKeyboardButton(text, callback_data="media_unavail")
 
-    # 🎨 الأزرار الأربعة مثبتة إجبارياً هنا 
     btns = [
         [make_btn("🎬 مشاهدة الفيديو", links["فيديو"]), make_btn("📚 قراءة الملزمة", links["نص"])],
         [make_btn("🎧 الاستماع للصوت", links["صوت"]), make_btn("🖼️ عرض الصور", links["صور"])]
@@ -144,12 +138,9 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None):
             await context.bot.send_message(chat_id, txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
     except Exception as e:
         logging.error(f"UI Error: {e}")
-        # احتياط أمان أخير في حال وجود خلل غير متوقع
-        fallback_btns = [[InlineKeyboardButton("⚠️ حدث خطأ في روابط هذا الدرس", callback_data="media_unavail")], [InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")]]
-        if message_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(fallback_btns))
 
 # ==========================================
-# 4. معالجة الرسائل واستيراد/تصدير الإكسل
+# 4. معالجة الرسائل، الإكسل، والتحويل من القناة
 # ==========================================
 async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -207,10 +198,40 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 updates_log += f"✅ تم استيراد {count_q} سؤال."
 
             await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
-            clear_cache() # 🚀 مسح الكاش عند رفع إكسل جديد لضمان تحديث البيانات للطلاب
+            clear_cache() 
             return await msg.reply_text(f"🎉 **تم تحديث قاعدة البيانات بنجاح!**\n\n{updates_log}", parse_mode="Markdown")
         except Exception as e:
             return await msg.reply_text("❌ حدث خطأ أثناء معالجة ملف الإكسل.")
+
+    # 🌟 ميزة التعرف على المحتوى المحول من القناة (أو المرفوع حديثاً) 🌟
+    has_media = msg.document or msg.video or msg.audio or msg.voice or msg.photo
+    if not state and has_media:
+        media_type = "نص" if msg.document else "فيديو" if msg.video else "صوت" if (msg.audio or msg.voice) else "صور" if msg.photo else "نص"
+        final_link = None
+        
+        # إذا تم التحويل من القناة (Forward)
+        if msg.forward_from_chat and str(msg.forward_from_chat.type) == "channel":
+            channel_username = msg.forward_from_chat.username
+            if channel_username:
+                final_link = f"https://t.me/{channel_username}/{msg.forward_from_message_id}"
+            else:
+                final_link = f"https://t.me/c/{str(msg.forward_from_chat.id).replace('-100', '')}/{msg.forward_from_message_id}"
+            await msg.reply_text("📥 **تم التعرف على المحتوى المحول من القناة بنجاح!**", parse_mode="Markdown")
+        
+        # إذا تم الرفع المباشر للبوت
+        else:
+            if CHANNEL_ID:
+                try:
+                    copied_msg = await context.bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=chat_id, message_id=msg.message_id)
+                    channel_username = CHANNEL_ID.replace('@', '')
+                    final_link = f"https://t.me/{channel_username}/{copied_msg.message_id}"
+                except Exception as e:
+                    logging.error(f"Error copying to channel: {e}")
+            
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_CAT", "temp_data": {"file_id": final_link, "type": media_type}}}, upsert=True)
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء الربط", callback_data="admin_cancel")]])
+        await msg.reply_text("📁 أرسل الآن اسم **السلسلة** التي ينتمي إليها المحتوى:", parse_mode="Markdown", reply_markup=keyboard)
+
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -222,6 +243,22 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = await get_main_keyboard(user_id)
     
+    # استكمال عمليات الإضافة
+    user = await db.users.find_one({"_id": user_id})
+    state = user.get("state", "") if user else ""
+    temp_data = user.get("temp_data", {}) if user else {}
+
+    if state == "WAIT_CAT":
+        temp_data["category"] = text
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_LES", "temp_data": temp_data}})
+        return await update.message.reply_text("✅ ممتاز! أرسل الآن اسم **المحاضرة / الدرس**:", parse_mode="Markdown")
+
+    if state == "WAIT_LES":
+        await db.library.insert_one({"title": text, "category": temp_data["category"], "lesson": text, "type": temp_data["type"], "file_id": temp_data["file_id"], "created_at": time.time()})
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
+        clear_cache()
+        return await update.message.reply_text(f"🎉 تم ربط المحتوى وتحديث البوت بنجاح!", parse_mode="Markdown")
+
     if text.startswith('/start'):
         await db.users.update_one({"_id": user_id}, {"$setOnInsert": {"score": 0, "streak": 0, "answered": []}}, upsert=True)
         if 'les_' in text:
@@ -269,13 +306,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 # 5. التفاعل السريع مع الأزرار الشفافة
 # ==========================================
-async def background_db_update(user_id, q_id):
-    if db is not None:
-        await db.users.update_one({"_id": str(user_id)}, {"$push": {"answered": str(q_id)}})
-
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    try: await query.answer() # الاستجابة الفورية لقتل علامة التحميل
+    try: await query.answer()
     except: pass
 
     data = query.data
@@ -284,7 +317,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await check_spam(user_id): return
     if data == "ignore": return 
     
-    # ⚠️ استجابة الزر الذي لا يوجد له رابط في الإكسل
     if data == "media_unavail":
         try: await context.bot.answer_callback_query(query.id, "⚠️ هذا المحتوى غير متوفر حالياً.", show_alert=True)
         except: pass
@@ -327,6 +359,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not doc: return
         return await send_question(context, chat_id, lesson=doc.get("lesson"), user_id=user_id, msg_id=query.message.message_id, back_doc_id=doc_id)
 
+    # 🌟 تعديل الاختبار: تحديد الزر المنقور فقط 🌟
     if data.startswith("ans_"):
         parts = data.split("_")
         is_correct = parts[1] == "1"
@@ -336,23 +369,21 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if diff > TIME_LIMIT or diff < 0: 
             return await query.edit_message_text("⏳ *انتهى الوقت المخصص للإجابة!*", parse_mode="Markdown")
         
-        # 🚀 تحديث الشاشة فوراً (السرعة الفائقة)
+        # تغيير الزر الذي تم نقره فقط لمنع التشتت
         new_kb = []
         for row in query.message.reply_markup.inline_keyboard:
             new_row = []
             for b in row:
                 if b.callback_data == data:
                     new_row.append(InlineKeyboardButton(b.text + (" ✅" if is_correct else " ❌"), callback_data="ignore"))
-                elif b.callback_data and b.callback_data.startswith("ans_1_"): 
-                    new_row.append(InlineKeyboardButton(b.text + " ✅", callback_data="ignore"))
                 else:
                     new_row.append(InlineKeyboardButton(b.text, callback_data=b.callback_data))
             new_kb.append(new_row)
             
         await query.edit_message_reply_markup(InlineKeyboardMarkup(new_kb))
         
-        # 🚀 إرسال التحديث لقاعدة البيانات في الخلفية
-        asyncio.create_task(background_db_update(user_id, q_id))
+        if db is not None:
+            await db.users.update_one({"_id": str(user_id)}, {"$push": {"answered": str(q_id)}})
         return
 
 async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, back_doc_id=None):
@@ -403,7 +434,7 @@ async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, bac
 ptb = Application.builder().token(BOT_TOKEN).build()
 ptb.add_handler(CommandHandler("start", handle_messages))
 ptb.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
-ptb.add_handler(MessageHandler(filters.Document.ALL, handle_media_upload))
+ptb.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.PHOTO, handle_media_upload))
 ptb.add_handler(CallbackQueryHandler(handle_callbacks))
 
 @app.post("/{full_path:path}")

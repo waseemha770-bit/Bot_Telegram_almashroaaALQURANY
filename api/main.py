@@ -17,7 +17,7 @@ app = FastAPI()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = str(os.environ.get("ADMIN_ID", "")) 
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "@almashro") # تم تثبيت قناتك كمرجع افتراضي
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@almashro") 
 TIME_LIMIT = 30
 
 # ==========================================
@@ -74,7 +74,7 @@ def get_type_keyboard():
     ])
 
 # ==========================================
-# 3. عرض تفاصيل الدرس (ومُعالج الروابط الذكي)
+# 3. عرض تفاصيل الدرس
 # ==========================================
 async def background_db_update(user_id, q_id=None, is_correct=None, lesson_view=None, cat_view=None):
     if db is None: return
@@ -116,7 +116,6 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
     
     links = {"فيديو": None, "نص": None, "صوت": None, "صور": None}
     
-    # 🌟 الفلتر العبقري لمعالجة روابط (-100) والروابط الناقصة 🌟
     for item in items:
         f_type = str(item.get("type", "نص"))
         raw_link = str(item.get("file_id", "")).strip().replace(" ", "")
@@ -124,33 +123,13 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
         safe_link = None
         if raw_link and raw_link.lower() not in ['', 'nan', 'none', 'null', 'لا يوجد']:
             ch_name = CHANNEL_ID.replace('@', '').replace('https://t.me/', '')
-            
-            # 1. معالجة رابطك المباشر الذي يحتوي على -100
-            if "-100" in raw_link:
-                msg_id = raw_link.split("/")[-1] # استخراج رقم الرسالة من الرابط
-                safe_link = f"https://t.me/{ch_name}/{msg_id}"
-            
-            # 2. إذا كان الرابط في الإكسل مجرد رقم (مثلاً 65)
-            elif raw_link.isdigit():
-                safe_link = f"https://t.me/{ch_name}/{raw_link}"
-            
-            # 3. إذا كان الرابط t.me/65 بدون اسم القناة
-            elif raw_link.startswith("t.me/") and raw_link.split("/")[1].isdigit():
-                safe_link = f"https://t.me/{ch_name}/{raw_link.split('/')[1]}"
-            
-            # 4. إذا كان الرابط https://t.me/65 بدون اسم القناة
-            elif raw_link.startswith("https://t.me/") and len(raw_link.split("/")) >= 4 and raw_link.split("/")[3].isdigit():
-                safe_link = f"https://t.me/{ch_name}/{raw_link.split('/')[3]}"
-            
-            # 5. إذا كان الرابط سليماً ولكنه يفتقد لـ https
-            elif raw_link.startswith("t.me/"):
-                safe_link = f"https://{raw_link}"
-            
-            # 6. روابط أخرى
-            elif "/" in raw_link and not raw_link.startswith("http"):
-                safe_link = f"https://t.me/{raw_link}"
-            else:
-                safe_link = raw_link if raw_link.startswith("http") else f"https://{raw_link}"
+            if "-100" in raw_link: safe_link = f"https://t.me/{ch_name}/{raw_link.split('/')[-1]}"
+            elif raw_link.isdigit(): safe_link = f"https://t.me/{ch_name}/{raw_link}"
+            elif raw_link.startswith("t.me/") and raw_link.split("/")[1].isdigit(): safe_link = f"https://t.me/{ch_name}/{raw_link.split('/')[1]}"
+            elif raw_link.startswith("https://t.me/") and len(raw_link.split("/")) >= 4 and raw_link.split("/")[3].isdigit(): safe_link = f"https://t.me/{ch_name}/{raw_link.split('/')[3]}"
+            elif raw_link.startswith("t.me/"): safe_link = f"https://{raw_link}"
+            elif "/" in raw_link and not raw_link.startswith("http"): safe_link = f"https://t.me/{raw_link}"
+            else: safe_link = raw_link if raw_link.startswith("http") else f"https://{raw_link}"
 
         if safe_link:
             if "فيديو" in f_type: links["فيديو"] = safe_link
@@ -187,7 +166,7 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
         logging.error(f"UI Error: {e}")
 
 # ==========================================
-# 4. معالجة الرسائل والملفات
+# 4. معالجة الرسائل والملفات المُحولة
 # ==========================================
 async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -202,7 +181,7 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not msg.document.file_name.endswith(('.xlsx', '.xls')):
             return await msg.reply_text("⚠️ يرجى رفع ملف بصيغة Excel (.xlsx) فقط.")
         
-        await msg.reply_text("⏳ جاري تحليل ملف الإكسل...")
+        await msg.reply_text("⏳ جاري تحليل ملف الإكسل وتطبيق فلتر منع التكرار...")
         try:
             file = await context.bot.get_file(msg.document.file_id)
             byte_array = await file.download_as_bytearray()
@@ -220,6 +199,9 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             if df_lib is not None:
                 await db.library.delete_many({}) 
                 count = 0
+                skipped = 0
+                seen_links = set() # 🌟 المتتبع لتجنب التكرار في الإكسل 🌟
+
                 for _, row in df_lib.iterrows():
                     cat_col = next((c for c in df_lib.columns if 'السلسلة' in str(c)), None)
                     les_col = next((c for c in df_lib.columns if 'الدرس' in str(c) or 'المحاضرة' in str(c)), None)
@@ -229,9 +211,22 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                     if les_col and cat_col and pd.notna(row.get(les_col)) and pd.notna(row.get(cat_col)):
                         t_val = str(row.get(type_col, 'نص')).strip() if type_col and pd.notna(row.get(type_col)) else 'نص'
                         l_val = str(row.get(link_col, '')).strip() if link_col and pd.notna(row.get(link_col)) else None
+                        
+                        # فلتر الروابط المكررة
+                        if l_val and str(l_val).lower() not in ['', 'nan', 'none', 'null']:
+                            link_str = str(l_val).strip()
+                            clean_id = link_str.split('/')[-1] if '/' in link_str else link_str # استخراج معرف الرسالة لمطابقته بذكاء
+                            if clean_id in seen_links:
+                                skipped += 1
+                                continue
+                            seen_links.add(clean_id)
+
                         await db.library.insert_one({"category": str(row[cat_col]).strip(), "lesson": str(row[les_col]).strip(), "type": t_val, "file_id": l_val, "created_at": time.time()})
                         count += 1
-                updates_log += f"✅ تم استيراد {count} درس ومحتوى.\n"
+                
+                updates_log += f"✅ تم استيراد {count} محتوى.\n"
+                if skipped > 0:
+                    updates_log += f"⚠️ تم تخطي {skipped} رابط مكرر بالملف.\n"
                 
             if df_q is not None:
                 await db.questions.delete_many({})
@@ -280,6 +275,20 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                     final_link = f"https://t.me/{ch_name}/{copied_msg.message_id}"
                 except Exception as e:
                     logging.error(f"Copy Error: {e}")
+
+        # 🌟 الفلتر الذكي لمنع الإضافة المكررة للروابط عبر تيليجرام 🌟
+        if final_link:
+            msg_id = final_link.split('/')[-1]
+            existing = await db.library.find_one({"file_id": {"$regex": f"(^|/){msg_id}$"}})
+            if existing:
+                cat_ex = existing.get("category", "غير محدد")
+                les_ex = existing.get("lesson", "غير محدد")
+                type_ex = existing.get("type", "غير محدد")
+                return await msg.reply_text(
+                    f"⚠️ **تنبيه:** هذا الملف موجود مسبقاً في النظام!\n\n"
+                    f"📁 السلسلة: {cat_ex}\n📖 المحاضرة: {les_ex}\n🏷️ النوع: {type_ex}\n\n"
+                    f"تم تجاهل العملية لمنع التكرار في قاعدة البيانات.", parse_mode="Markdown"
+                )
             
         pipeline = [{"$sort": {"_id": 1}}, {"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
         cats = await db.library.aggregate(pipeline).to_list(length=None)
@@ -437,7 +446,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("الرجاء استخدام الأزرار أدناه 👇", reply_markup=kb)
 
 # ==========================================
-# 5. التفاعل مع الأزرار
+# 5. التفاعل مع الأزرار 
 # ==========================================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

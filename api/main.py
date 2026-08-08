@@ -17,7 +17,7 @@ app = FastAPI()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = str(os.environ.get("ADMIN_ID", "")) 
-CHANNEL_ID = os.environ.get("CHANNEL_ID") 
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@almashro") # تم تثبيت قناتك كمرجع افتراضي
 TIME_LIMIT = 30
 
 # ==========================================
@@ -55,7 +55,7 @@ async def is_admin(user_id: str) -> bool:
     return False
 
 # ==========================================
-# 2. الواجهة الرئيسية وأنواع المحتوى
+# 2. الواجهة الرئيسية
 # ==========================================
 async def get_main_keyboard(user_id: str):
     if await is_admin(user_id):
@@ -66,7 +66,6 @@ async def get_main_keyboard(user_id: str):
     return ReplyKeyboardMarkup([["🔍 اعرف الله"]], resize_keyboard=True)
 
 def get_type_keyboard():
-    """لوحة اختيار نوع المحتوى الجديدة"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎬 فيديو", callback_data="utype_فيديو"), InlineKeyboardButton("📚 كتاب/ملزمة", callback_data="utype_نص")],
         [InlineKeyboardButton("🎧 صوت", callback_data="utype_صوت"), InlineKeyboardButton("🖼️ صور", callback_data="utype_صور")],
@@ -75,7 +74,7 @@ def get_type_keyboard():
     ])
 
 # ==========================================
-# 3. عرض تفاصيل الدرس والتحليلات
+# 3. عرض تفاصيل الدرس ومصحح الروابط
 # ==========================================
 async def background_db_update(user_id, q_id=None, is_correct=None, lesson_view=None, cat_view=None):
     if db is None: return
@@ -117,14 +116,31 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
     
     links = {"فيديو": None, "نص": None, "صوت": None, "صور": None}
     
+    # 🌟 الفلتر الذكي لإصلاح الروابط التالفة أو المكتوبة بشكل خاطئ في الإكسل 🌟
     for item in items:
         f_type = str(item.get("type", "نص"))
-        f_link = item.get("file_id")
+        raw_link = str(item.get("file_id", "")).strip().replace(" ", "")
         
         safe_link = None
-        if pd.notna(f_link) and str(f_link).strip().lower() not in ['', 'nan', 'none', 'null', 'لا يوجد']:
-            safe_link = str(f_link).strip().replace(" ", "")
-            if not safe_link.startswith('http'): safe_link = f"https://{safe_link}"
+        if raw_link and raw_link.lower() not in ['', 'nan', 'none', 'null', 'لا يوجد']:
+            # 1. إذا كان الرابط في الإكسل مجرد رقم (مثلاً 125)
+            if raw_link.isdigit():
+                safe_link = f"https://t.me/almashro/{raw_link}"
+            # 2. إذا كان الرابط t.me/125 بدون اسم القناة
+            elif raw_link.startswith("t.me/") and raw_link.split("/")[1].isdigit():
+                safe_link = f"https://t.me/almashro/{raw_link.split('/')[1]}"
+            # 3. إذا كان الرابط https://t.me/125 بدون اسم القناة
+            elif raw_link.startswith("https://t.me/") and len(raw_link.split("/")) >= 4 and raw_link.split("/")[3].isdigit():
+                safe_link = f"https://t.me/almashro/{raw_link.split('/')[3]}"
+            # 4. إذا كان مكتوب t.me/almashro/125 (إصلاح قياسي)
+            elif raw_link.startswith("t.me/"):
+                safe_link = f"https://{raw_link}"
+            # 5. إذا كان مكتوب almashro/125 فقط
+            elif "/" in raw_link and not raw_link.startswith("http"):
+                safe_link = f"https://t.me/{raw_link}"
+            # 6. إذا كان سليماً تماماً
+            else:
+                safe_link = raw_link if raw_link.startswith("http") else f"https://{raw_link}"
 
         if safe_link:
             if "فيديو" in f_type: links["فيديو"] = safe_link
@@ -172,7 +188,6 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = await db.users.find_one({"_id": user_id})
     state = user.get("state", "") if user else ""
     
-    # استيراد الإكسل الشامل للمنصة
     if state == "WAIT_EXCEL" and msg.document:
         if not msg.document.file_name.endswith(('.xlsx', '.xls')):
             return await msg.reply_text("⚠️ يرجى رفع ملف بصيغة Excel (.xlsx) فقط.")
@@ -237,11 +252,10 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             return await msg.reply_text("❌ حدث خطأ أثناء معالجة ملف الإكسل.")
 
-    # 🌟 الرفع الفردي للدروس (مع حفظ ID الملف لقراءة الأسئلة لاحقاً إن لزم) 🌟
     has_media = msg.document or msg.video or msg.audio or msg.voice or msg.photo
     if not state and has_media:
         final_link = None
-        telegram_file_id = msg.document.file_id if msg.document else None # حفظ معرف الملف في حال كان إكسل
+        telegram_file_id = msg.document.file_id if msg.document else None 
         
         if msg.forward_from_chat and str(msg.forward_from_chat.type) == "channel":
             channel_username = msg.forward_from_chat.username
@@ -250,10 +264,12 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             if CHANNEL_ID:
                 try:
-                    copied_msg = await context.bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=chat_id, message_id=msg.message_id)
-                    channel_username = CHANNEL_ID.replace('@', '')
-                    final_link = f"https://t.me/{channel_username}/{copied_msg.message_id}"
-                except: pass
+                    chat_target = CHANNEL_ID if CHANNEL_ID.startswith('@') or CHANNEL_ID.startswith('-100') else f"@{CHANNEL_ID}"
+                    copied_msg = await context.bot.copy_message(chat_id=chat_target, from_chat_id=chat_id, message_id=msg.message_id)
+                    ch_name = CHANNEL_ID.replace('@', '').replace('https://t.me/', '')
+                    final_link = f"https://t.me/{ch_name}/{copied_msg.message_id}"
+                except Exception as e:
+                    logging.error(f"Copy Error: {e}")
             
         pipeline = [{"$sort": {"_id": 1}}, {"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
         cats = await db.library.aggregate(pipeline).to_list(length=None)
@@ -355,7 +371,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user.get("state", "") if user else ""
     temp_data = user.get("temp_data", {}) if user else {}
 
-    # 🌟 الاستمرار في تسجيل الدرس الجديد إن كان نصاً 🌟
     if state == "WAIT_UPL_LES_TEXT":
         temp_data["lesson"] = text
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_TYPE", "temp_data": temp_data}})
@@ -363,7 +378,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
-    # بقية الحالات (إضافة سؤال، مشرف، استفتاء)
     if state == "WAIT_Q_TEXT":
         temp_data["q_text"] = text
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_Q_CORRECT", "temp_data": temp_data}})
@@ -413,7 +427,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("الرجاء استخدام الأزرار أدناه 👇", reply_markup=kb)
 
 # ==========================================
-# 5. التفاعل مع الأزرار الشفافة الشاملة
+# 5. التفاعل مع الأزرار وإنشاء الروابط
 # ==========================================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -439,7 +453,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
     if data == "ignore": return 
 
-    # 🌟 تحديد نوع المحتوى المرفوع 🌟
     if data.startswith("utype_"):
         val = data.replace("utype_", "")
         user = await db.users.find_one({"_id": user_id})
@@ -450,49 +463,33 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tg_file_id = temp_data.get("telegram_file_id")
 
         if val == "أسئلة":
-            if not tg_file_id:
-                return await query.edit_message_text("⚠️ يجب أن ترفع ملف بصيغة (Excel) لإضافة الأسئلة بهذا الشكل!")
-            
+            if not tg_file_id: return await query.edit_message_text("⚠️ يجب أن ترفع ملف بصيغة (Excel) لإضافة الأسئلة!")
             await query.edit_message_text("⏳ جاري قراءة ملف الأسئلة وإضافتها للدرس...")
             try:
                 file = await context.bot.get_file(tg_file_id)
                 byte_array = await file.download_as_bytearray()
                 xls = pd.ExcelFile(io.BytesIO(byte_array))
                 df = pd.read_excel(xls, sheet_name=0) 
-                
                 count = 0
                 for _, row in df.iterrows():
-                    cols = [str(c).strip() for c in df.columns]
                     q_col = next((c for c in df.columns if 'سؤال' in str(c)), None)
                     ans_col = next((c for c in df.columns if 'صحيح' in str(c)), None)
-                    
                     if q_col and ans_col and pd.notna(row.get(q_col)) and pd.notna(row.get(ans_col)):
                         wrongs = []
-                        wrong_cols = [c for c in df.columns if 'خاطئة' in str(c) or 'خطأ' in str(c)]
-                        for wc in wrong_cols:
+                        for wc in [c for c in df.columns if 'خاطئة' in str(c) or 'خطأ' in str(c)]:
                             if pd.notna(row.get(wc)): wrongs.append(str(row[wc]).strip())
-                        
                         await db.questions.insert_one({"category": cat, "lesson": les, "question": str(row[q_col]).strip(), "correct": str(row[ans_col]).strip(), "wrong": wrongs, "correct_answers": 0, "wrong_answers": 0})
                         count += 1
-                
                 await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
                 clear_cache()
                 return await query.edit_message_text(f"🎉 تم إضافة {count} سؤال للدرس ({les}) بنجاح!")
-            except Exception as e:
-                logging.error(f"Excel Parse Error: {e}")
-                return await query.edit_message_text("❌ حدث خطأ في قراءة الملف. تأكد من وجود عمود 'السؤال' وعمود 'الإجابة الصحيحة'.")
+            except: return await query.edit_message_text("❌ حدث خطأ في قراءة الملف.")
         else:
-            # تحديث أو إضافة الرابط للدرس بالنوع المختار
-            await db.library.update_one(
-                {"category": cat, "lesson": les, "type": val},
-                {"$set": {"file_id": f_link, "created_at": time.time()}},
-                upsert=True
-            )
+            await db.library.update_one({"category": cat, "lesson": les, "type": val}, {"$set": {"file_id": f_link, "created_at": time.time()}}, upsert=True)
             await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
             clear_cache()
             return await query.edit_message_text(f"🎉 **تم ربط الملف بنجاح!**\n\n📁 السلسلة: {cat}\n📖 المحاضرة: {les}\n🏷️ النوع: {val}", parse_mode="Markdown")
 
-    # 🌟 الاستمرار في اختيار الدرس 🌟
     if data.startswith("ul_"):
         val = data.replace("ul_", "")
         if val == "new":
@@ -501,7 +498,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         doc = await db.library.find_one({"_id": ObjectId(val)})
         lesson_name = doc["lesson"] if doc else "بدون عنوان"
-        
         user = await db.users.find_one({"_id": user_id})
         temp_data = user.get("temp_data", {})
         temp_data["lesson"] = lesson_name
@@ -533,7 +529,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
         btns.append([InlineKeyboardButton("➕ إضافة محاضرة جديدة", callback_data="ul_new")])
         btns.append([InlineKeyboardButton("❌ إلغاء العملية", callback_data="admin_cancel")])
-        
         return await query.edit_message_text(f"📁 السلسلة: **{cat_name}**\nاختر المحاضرة التي ينتمي لها الملف:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
 
     if data == "admin_stats" and await is_admin(user_id):
@@ -547,13 +542,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_summary = pd.DataFrame([{"إجمالي الطلاب المسجلين": total_users, "الطلاب النشطين (آخر 7 أيام)": active_users, "تاريخ التقرير": time.strftime("%Y-%m-%d %H:%M:%S")}])
-                df_summary.to_excel(writer, sheet_name='ملخص النشاط', index=False)
-                if top_lessons:
-                    pd.DataFrame(top_lessons).rename(columns={"category": "السلسلة", "lesson": "الدرس", "views": "المشاهدات"})[["السلسلة", "الدرس", "المشاهدات"]].to_excel(writer, sheet_name='الدروس الأكثر مشاهدة', index=False)
-                if top_wrong_qs:
-                    q_list = [{"السلسلة": q.get("category", "عام"), "الدرس": q.get("lesson", "عام"), "السؤال": q.get("question", ""), "الخطأ": q.get("wrong_answers", 0)} for q in top_wrong_qs]
-                    pd.DataFrame(q_list).to_excel(writer, sheet_name='الأسئلة الأكثر خطأ', index=False)
+                pd.DataFrame([{"إجمالي الطلاب المسجلين": total_users, "الطلاب النشطين (آخر 7 أيام)": active_users, "تاريخ التقرير": time.strftime("%Y-%m-%d %H:%M:%S")}]).to_excel(writer, sheet_name='ملخص النشاط', index=False)
+                if top_lessons: pd.DataFrame(top_lessons).rename(columns={"category": "السلسلة", "lesson": "الدرس", "views": "المشاهدات"})[["السلسلة", "الدرس", "المشاهدات"]].to_excel(writer, sheet_name='الدروس الأكثر مشاهدة', index=False)
+                if top_wrong_qs: pd.DataFrame([{"السلسلة": q.get("category", "عام"), "الدرس": q.get("lesson", "عام"), "السؤال": q.get("question", ""), "الخطأ": q.get("wrong_answers", 0)} for q in top_wrong_qs]).to_excel(writer, sheet_name='الأسئلة الأكثر خطأ', index=False)
             output.seek(0)
             await query.message.delete()
             return await context.bot.send_document(chat_id=chat_id, document=output, filename="تقرير_المنصة.xlsx", caption="📊 **تقرير الإحصائيات الشامل**", parse_mode="Markdown")
@@ -641,7 +632,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             GLOBAL_CACHE[cache_key] = await db.library.aggregate(pipeline).to_list(length=None)
         btns = [[InlineKeyboardButton(f"{idx}- 📖 | {les['_id'][:40]}", callback_data=f"les_{str(les['doc_id'])}")] for idx, les in enumerate(GLOBAL_CACHE[cache_key], 1)]
         btns.append([InlineKeyboardButton("🔙 العودة للرئيسية", callback_data="main_menu")])
-        return await query.edit_message_text(f"📂 **السلسلة:**\nاختر المحاضرة أو الدرس المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        return await query.edit_message_text(f"📂 **السلسلة:**\nاختر المحاضرة المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data.startswith("les_"):
         return await show_lesson_ui(context, chat_id, data.replace("les_", ""), message_id=query.message.message_id, user_id=user_id)
@@ -698,12 +689,10 @@ async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, bac
         if w and str(w).lower() != 'nan': btns.append(InlineKeyboardButton(w, callback_data=f"ans_0_{q_id_str}_{ts}"))
     random.shuffle(btns)
     inline_kb = [[b] for b in btns] 
-    
     nav_row = []
     if back_doc_id: nav_row.append(InlineKeyboardButton("🔙 إنهاء الاختبار", callback_data=f"les_{back_doc_id}"))
     nav_row.append(InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu"))
     inline_kb.append(nav_row)
-    
     txt = f"📖 **المحاضرة:** {lesson}\n\n❓ *{q['question']}*\n\n⏱️ أمامك {TIME_LIMIT} ثانية للإجابة!"
     
     if msg_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=msg_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_kb))

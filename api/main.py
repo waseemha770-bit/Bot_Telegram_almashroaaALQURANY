@@ -55,17 +55,16 @@ async def check_spam(user_id: str) -> bool:
     return False
 
 # ==========================================
-# 🌟 دالة تنظيف الشاشة (لحذف القوائم القديمة) 🌟
+# 🌟 دالة تنظيف الشاشة (لحذف القوائم القديمة)
 # ==========================================
 async def clean_chat_history(user_id, chat_id, context):
-    """تقوم هذه الدالة بحذف الرسالة القديمة للبوت لتجنب عناء التمرير"""
     if db is None: return
     try:
         user = await db.users.find_one({"_id": str(user_id)})
         if user and user.get("last_msg_id"):
             await context.bot.delete_message(chat_id=chat_id, message_id=user["last_msg_id"])
     except Exception:
-        pass # نتجاهل الخطأ إذا كانت الرسالة محذوفة مسبقاً
+        pass 
 
 # ==========================================
 # دوال مساعدة (تاريخ، إعدادات، وصلاحيات)
@@ -110,7 +109,7 @@ def get_perms_kb(perms, edit_mode=False, admin_id=None):
     return InlineKeyboardMarkup(kb)
 
 # ==========================================
-# الواجهة الرئيسية
+# الواجهة الرئيسية وأزرار الرفع
 # ==========================================
 async def get_main_keyboard(user_id: str):
     adm = await get_admin_doc(user_id)
@@ -124,9 +123,10 @@ async def get_main_keyboard(user_id: str):
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
 def get_type_keyboard():
+    # 🌟 تم تحديث الأزرار لتسهيل الأمر على الإدارة 🌟
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎬 فيديو", callback_data="utype_فيديو"), InlineKeyboardButton("📚 كتاب/ملزمة", callback_data="utype_نص")],
-        [InlineKeyboardButton("🎧 صوت", callback_data="utype_صوت"), InlineKeyboardButton("🖼️ صور", callback_data="utype_صور")],
+        [InlineKeyboardButton("🎬 ريلز (فيديو)", callback_data="utype_فيديو"), InlineKeyboardButton("📚 كامل الملزمة (نص)", callback_data="utype_نص")],
+        [InlineKeyboardButton("🎧 اليوم الثقافي (صوت)", callback_data="utype_صوت"), InlineKeyboardButton("🖼️ ملخص الملزمة (صور)", callback_data="utype_صور")],
         [InlineKeyboardButton("📝 ملف إكسل (لإضافة الأسئلة)", callback_data="utype_أسئلة")],
         [InlineKeyboardButton("❌ إلغاء العملية", callback_data="admin_cancel")]
     ])
@@ -194,15 +194,19 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
 
     def make_btn(text, link): return InlineKeyboardButton(text, url=link) if link else InlineKeyboardButton(text, callback_data="media_unavail")
 
+    # 🌟 تم التعديل على المسميات بناءً على طلبك 🌟
     btns = [
-        [make_btn("🎬 مشاهدة الفيديو", links["فيديو"]), make_btn("📚 قراءة الملزمة", links["نص"])],
-        [make_btn("🎧 الاستماع للصوت", links["صوت"]), make_btn("🖼️ عرض الصور", links["صور"])]
+        [make_btn("🎬 ريلز", links["فيديو"]), make_btn("📚 كامل الملزمة", links["نص"])],
+        [make_btn("🎧 اليوم الثقافي", links["صوت"]), make_btn("🖼️ ملخص الملزمة", links["صور"])]
     ]
-    btns.append([InlineKeyboardButton("✨ 📝 ابدأ اختبار الدرس الآن ✨", callback_data=f"quizles_{doc_id}")])
+    btns.append([InlineKeyboardButton("✨ 📝 قيم نفسك ✨", callback_data=f"quizles_{doc_id}")])
+    
     bot_username = context.bot.username
     share_url = f"https://t.me/share/url?text=📚 إليك هذا الدرس القيم: {lesson_title}\n&url=https://t.me/{bot_username}?start=les_{doc_id}"
     btns.append([InlineKeyboardButton("🔗 شارك هذا الدرس (لتعم الفائدة)", url=share_url)])
-    btns.append([InlineKeyboardButton("🔙 رجوع للسلسلة", callback_data=f"cat_{series[:25]}"), InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")])
+    
+    # 🌟 تم التعديل على زر الرجوع 🌟
+    btns.append([InlineKeyboardButton("🔙 السابق", callback_data=f"cat_{series[:25]}"), InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")])
 
     txt = f"📖 **{lesson_title}**\n📂 السلسلة: {series}\n\n👇 اختر المحتوى للانتقال إليه:"
     try:
@@ -501,7 +505,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
-    # مسح القائمة إذا أرسل المستخدم أي نص آخر
     await clean_chat_history(user_id, chat_id, context)
     sent_msg = await update.message.reply_text("الرجاء استخدام الأزرار أدناه 👇", reply_markup=kb)
     await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
@@ -904,8 +907,8 @@ async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, bac
     if not available:
         txt = "🎉 **أتممت جميع أسئلة هذا الدرس بنجاح!**"
         btns = []
-        if back_doc_id: btns.append([InlineKeyboardButton("🔙 العودة للدرس", callback_data=f"les_{back_doc_id}")])
-        btns.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")])
+        if back_doc_id: btns.append([InlineKeyboardButton("🔙 | العودة للدرس", callback_data=f"les_{back_doc_id}")])
+        btns.append([InlineKeyboardButton("🏠 | الرئيسية", callback_data="main_menu")])
         if msg_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=msg_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
         else: 
             if user_id: await clean_chat_history(user_id, chat_id, context)
@@ -920,11 +923,13 @@ async def send_question(context, chat_id, lesson, user_id=None, msg_id=None, bac
     for w in q.get("wrong", []):
         if w and str(w).lower() != 'nan': btns.append(InlineKeyboardButton(w, callback_data=f"ans_0_{q_id_str}_{ts}"))
     random.shuffle(btns)
+    
+    # 🌟 أزرار الاختبارات أصبحت مرتبة في سطر واحد لكل زر 🌟
     inline_kb = [[b] for b in btns] 
-    nav_row = []
-    if back_doc_id: nav_row.append(InlineKeyboardButton("🔙 إنهاء الاختبار", callback_data=f"les_{back_doc_id}"))
-    nav_row.append(InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu"))
-    inline_kb.append(nav_row)
+    
+    if back_doc_id: inline_kb.append([InlineKeyboardButton("🔙 | إنهاء الاختبار", callback_data=f"les_{back_doc_id}")])
+    inline_kb.append([InlineKeyboardButton("🏠 | الرئيسية", callback_data="main_menu")])
+    
     txt = f"📖 **المحاضرة:** {lesson}\n\n❓ *{q['question']}*\n\n⏱️ أمامك {TIME_LIMIT} ثانية للإجابة!"
     
     if msg_id: await context.bot.edit_message_text(txt, chat_id=chat_id, message_id=msg_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_kb))
@@ -949,6 +954,7 @@ async def process_update(request: Request):
         req_json = await request.json()
         update = Update.de_json(req_json, ptb.bot)
         await ptb.process_update(update)
+        
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         if tasks: asyncio.gather(*tasks) 
     except Exception as e: logging.error(f"Webhook error: {e}")

@@ -370,7 +370,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         btns = []
         if await has_perm(user_id, "publish"):
             btns.append([InlineKeyboardButton("📢 | نشر درس للقناة", callback_data="admin_pub_menu")])
-            btns.append([InlineKeyboardButton("🔗 | تعديل رابط/نص الاشتراك", callback_data="admin_edit_footer")])
+            btns.append([InlineKeyboardButton("🔗 | رابط الاشتراك", callback_data="admin_edit_footer"), InlineKeyboardButton("📅 | قالب الأسبوع", callback_data="admin_edit_weekly")])
             btns.append([InlineKeyboardButton("📊 | إنشاء استفتاء", callback_data="admin_poll")])
         if await has_perm(user_id, "questions"):
             btns.append([InlineKeyboardButton("➕ | إضافة سؤال لدرس", callback_data="admin_add_q")])
@@ -419,6 +419,30 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await db.users.find_one({"_id": user_id})
     state = user.get("state", "") if user else ""
     temp_data = user.get("temp_data", {}) if user else {}
+
+    # 🌟 إدخال قراءة قالب الأسبوع 🌟
+    if state == "WAIT_WEEKLY_TPL":
+        lines = text.split('\n')
+        parsed_data = {}
+        for line in lines:
+            if ':' in line:
+                key, val = line.split(':', 1)
+                parsed_data[key.strip()] = val.strip()
+
+        await db.settings.update_one({"_id": "weekly_tpl"}, {"$set": {
+            "title": parsed_data.get("العنوان", "مقرر الأسبوع"),
+            "desc": parsed_data.get("الوصف", "( حالات الواتس وفلاشات )"),
+            "day_prefix": parsed_data.get("بادئة الأيام", "فلاشة يوم"),
+            "link_text": parsed_data.get("نص الرابط", "إضغط هنا"),
+            "note": parsed_data.get("ملاحظة", "دروس الملزمة مقسمة على ستة أيام"),
+            "footer": parsed_data.get("خاتمة", "تم بحمد الله رب العالمين")
+        }}, upsert=True)
+
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
+        await clean_chat_history(user_id, chat_id, context)
+        sent_msg = await update.message.reply_text("✅ **تم حفظ قالب مقرر الأسبوع بنجاح!**", parse_mode="Markdown", reply_markup=kb)
+        await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
+        return
 
     if state == "WAIT_FOOTER_TEXT":
         await db.settings.update_one({"_id": "bot_settings"}, {"$set": {"footer_text": text}}, upsert=True)
@@ -556,6 +580,32 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.admins.update_one({"_id": target_id}, {"$set": {"permissions": perms}}, upsert=True)
         return await query.edit_message_text(f"✅ تم تحديث الصلاحيات بنجاح!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin_manage")]]))
 
+    # 🌟 زر تعديل مسودة قالب الأسبوع 🌟
+    if data == "admin_edit_weekly" and await has_perm(user_id, "publish"):
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_WEEKLY_TPL"}})
+        
+        # استخراج البيانات الحالية أو وضع الافتراضية
+        settings = await db.settings.find_one({"_id": "weekly_tpl"}) or {}
+        c_title = settings.get("title", "مقرر الأسبوع")
+        c_desc = settings.get("desc", "( حالات الواتس وفلاشات )")
+        c_prefix = settings.get("day_prefix", "فلاشة يوم")
+        c_link = settings.get("link_text", "إضغط هنا")
+        c_note = settings.get("note", "دروس الملزمة مقسمة على ستة أيام")
+        c_footer = settings.get("footer", "تم بحمد الله رب العالمين")
+
+        msg = f"""✍️ **تعديل مسميات قالب مقرر الأسبوع:**
+
+قم بـ **نسخ** الرسالة الموجودة في الأسفل بالكامل، قم بتعديل الكلمات الموجودة بعد علامة النقطتين (`:`). ثم أرسلها لي هنا في المحادثة لكي يتم حفظها:
+
+--- نسخ من الأسفل ---
+العنوان: {c_title}
+الوصف: {c_desc}
+بادئة الأيام: {c_prefix}
+نص الرابط: {c_link}
+ملاحظة: {c_note}
+خاتمة: {c_footer}"""
+        return await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
+
     if data == "admin_edit_footer" and await has_perm(user_id, "publish"):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_FOOTER_TEXT"}})
         msg = "✍️ أرسل الآن **النص مع الرابط** الذي تريده أن يظهر كـ (تذييل) أسفل الدروس المنشورة:\n\n*(الوضع الافتراضي الحالي سيكون هو النص القديم إذا لم تقم بتعديله)*"
@@ -589,16 +639,15 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         temp_data["pub_les"] = lesson_name
         
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": temp_data}})
-        # 🌟 إضافة القالب الثالث (مقرر الأسبوع) 🌟
         btns = [
             [InlineKeyboardButton("📝 | قالب كلاسيكي (نصي)", callback_data="pubfmt_text")], 
             [InlineKeyboardButton("🔲 | قالب الأزرار الشفافة", callback_data="pubfmt_btns")],
-            [InlineKeyboardButton("📅 | قالب مقرر الأسبوع (كالمرفق)", callback_data="pubfmt_weekly")],
+            [InlineKeyboardButton("📅 | قالب مقرر الأسبوع", callback_data="pubfmt_weekly")],
             [InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")]
         ]
         return await query.edit_message_text(f"✅ تم اختيار: **{lesson_name}**\n\nاختر القالب الذي تفضله لتوليد المسودة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
-    # ================= 🌟 توليد المسودات بـ HTML 🌟 =================
+    # ================= 🌟 توليد المسودات الديناميكية 🌟 =================
     if data.startswith("pubfmt_"):
         fmt_type = data.replace("pubfmt_", "")
         user = await db.users.find_one({"_id": user_id})
@@ -621,21 +670,30 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         footer_content = await get_footer_text()
         
-        # 🌟 1. قالب مقرر الأسبوع (مطابق لصورة العميل حرفياً) 🌟
+        # 🌟 1. قالب مقرر الأسبوع (ديناميكي وقابل للتعديل) 🌟
         if fmt_type == "weekly":
             safe_les = html.escape(les)
             flash_link = links.get("ملخص الملزمة", links.get("كامل الملزمة", f"https://t.me/{CHANNEL_ID.replace('@','')}"))
             
-            draft_text = f"<blockquote>مقرر الأسبوع ❞</blockquote>\n\n"
+            # جلب مسميات القالب من قاعدة البيانات
+            tpl_settings = await db.settings.find_one({"_id": "weekly_tpl"}) or {}
+            t_title = tpl_settings.get("title", "مقرر الأسبوع")
+            t_desc = tpl_settings.get("desc", "( حالات الواتس وفلاشات )")
+            t_prefix = tpl_settings.get("day_prefix", "فلاشة يوم")
+            t_link = tpl_settings.get("link_text", "إضغط هنا")
+            t_note = tpl_settings.get("note", "دروس الملزمة مقسمة على ستة أيام")
+            t_footer = tpl_settings.get("footer", "تم بحمد الله رب العالمين")
+
+            draft_text = f"<blockquote>{html.escape(t_title)} ❞</blockquote>\n\n"
             draft_text += f"<b>ملزمة- {safe_les}</b>\n\n"
-            draft_text += f"( حالات الواتس وفلاشات )\n\n"
+            draft_text += f"{html.escape(t_desc)}\n\n"
 
             days = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس"]
             for day in days:
-                draft_text += f"<blockquote>فلاشة يوم {day} <a href='{flash_link}'>إضغط هنا</a> ❞</blockquote>\n\n"
+                draft_text += f"<blockquote>{html.escape(t_prefix)} {day} <a href='{flash_link}'>{html.escape(t_link)}</a> ❞</blockquote>\n\n"
 
-            draft_text += f"<blockquote>دروس الملزمة مقسمة على ستة أيام ❞</blockquote>\n\n"
-            draft_text += f"تم بحمد الله رب العالمين\n"
+            draft_text += f"<blockquote>{html.escape(t_note)} ❞</blockquote>\n\n"
+            draft_text += f"{html.escape(t_footer)}\n"
             draft_text += f"\n{html.escape(footer_content)}"
 
             temp_data["draft_format"] = "html_weekly"
@@ -644,7 +702,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             btns = [[InlineKeyboardButton("✅ | انشر في القناة الآن", callback_data="pubconf_yes")], [InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")]]
             return await query.edit_message_text(f"📅 **معاينة مسودة (مقرر الأسبوع):**\n\n{draft_text}\n\n--- \nهل تريد النشر؟", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(btns), disable_web_page_preview=False)
 
-        # 🌟 2. قالب كلاسيكي (نصي مع علامات الاقتباس الجميلة) 🌟
+        # 🌟 2. قالب كلاسيكي 🌟
         elif fmt_type == "text":
             safe_cat = html.escape(cat)
             safe_les = html.escape(les)
@@ -806,7 +864,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         btns = []
         if await has_perm(user_id, "publish"): 
             btns.append([InlineKeyboardButton("📢 | نشر درس للقناة", callback_data="admin_pub_menu")])
-            btns.append([InlineKeyboardButton("🔗 | تعديل رابط/نص الاشتراك", callback_data="admin_edit_footer")])
+            btns.append([InlineKeyboardButton("🔗 | رابط الاشتراك", callback_data="admin_edit_footer"), InlineKeyboardButton("📅 | قالب الأسبوع", callback_data="admin_edit_weekly")])
             btns.append([InlineKeyboardButton("📊 | إنشاء استفتاء", callback_data="admin_poll")])
         if await has_perm(user_id, "questions"): btns.append([InlineKeyboardButton("➕ | إضافة سؤال لدرس", callback_data="admin_add_q")])
         if await has_perm(user_id, "stats"): btns.append([InlineKeyboardButton("📈 | الإحصائيات", callback_data="admin_stats")])
@@ -982,7 +1040,6 @@ async def process_update(request: Request):
         req_json = await request.json()
         update = Update.de_json(req_json, ptb.bot)
         await ptb.process_update(update)
-        
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         if tasks: asyncio.gather(*tasks) 
     except Exception as e: logging.error(f"Webhook error: {e}")

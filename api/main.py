@@ -19,7 +19,7 @@ app = FastAPI()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = str(os.environ.get("ADMIN_ID", "")) 
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "@almashro") 
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@almashro") # يظل هذا كـ(مخزن أساسي) للملفات
 TIME_LIMIT = 30
 
 # ==========================================
@@ -55,9 +55,6 @@ async def check_spam(user_id: str) -> bool:
     user_last_action[user_id] = now
     return False
 
-# ==========================================
-# دالة تنظيف الشاشة
-# ==========================================
 async def clean_chat_history(user_id, chat_id, context):
     if db is None: return
     try:
@@ -66,9 +63,6 @@ async def clean_chat_history(user_id, chat_id, context):
             await context.bot.delete_message(chat_id=chat_id, message_id=user["last_msg_id"])
     except Exception: pass 
 
-# ==========================================
-# دوال مساعدة (تاريخ، إعدادات، وصلاحيات)
-# ==========================================
 def get_auto_arabic_date():
     months = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
     days = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
@@ -108,9 +102,6 @@ def get_perms_kb(perms, edit_mode=False, admin_id=None):
     kb.append([InlineKeyboardButton("🔙 | تراجع", callback_data="admin_manage")])
     return InlineKeyboardMarkup(kb)
 
-# ==========================================
-# الواجهة الرئيسية وأزرار الرفع
-# ==========================================
 async def get_main_keyboard(user_id: str):
     adm = await get_admin_doc(user_id)
     if not adm: return ReplyKeyboardMarkup([["🔍 اعرف الله"]], resize_keyboard=True)
@@ -130,9 +121,6 @@ def get_type_keyboard():
         [InlineKeyboardButton("❌ إلغاء العملية", callback_data="admin_cancel")]
     ])
 
-# ==========================================
-# مصحح الروابط 
-# ==========================================
 def fix_link(raw_link):
     safe_link = None
     if raw_link and str(raw_link).strip().lower() not in ['', 'nan', 'none', 'null', 'لا يوجد']:
@@ -370,7 +358,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         btns = []
         if await has_perm(user_id, "publish"):
             btns.append([InlineKeyboardButton("📢 | نشر درس للقناة", callback_data="admin_pub_menu")])
-            btns.append([InlineKeyboardButton("🔗 | رابط الاشتراك", callback_data="admin_edit_footer"), InlineKeyboardButton("📅 | قالب الأسبوع", callback_data="admin_edit_weekly")])
+            btns.append([InlineKeyboardButton("📡 | إدارة قنوات النشر", callback_data="admin_channels")]) # 🌟 إضافة القنوات 🌟
+            btns.append([InlineKeyboardButton("🎨 | إدارة قوالب النشر", callback_data="admin_tpl_menu")])
+            btns.append([InlineKeyboardButton("🔗 | تعديل تذييل النشر", callback_data="admin_edit_footer")])
             btns.append([InlineKeyboardButton("📊 | إنشاء استفتاء", callback_data="admin_poll")])
         if await has_perm(user_id, "questions"):
             btns.append([InlineKeyboardButton("➕ | إضافة سؤال لدرس", callback_data="admin_add_q")])
@@ -420,27 +410,46 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user.get("state", "") if user else ""
     temp_data = user.get("temp_data", {}) if user else {}
 
-    # 🌟 إدخال قراءة قالب الأسبوع 🌟
-    if state == "WAIT_WEEKLY_TPL":
-        lines = text.split('\n')
-        parsed_data = {}
-        for line in lines:
-            if ':' in line:
-                key, val = line.split(':', 1)
-                parsed_data[key.strip()] = val.strip()
-
-        await db.settings.update_one({"_id": "weekly_tpl"}, {"$set": {
-            "title": parsed_data.get("العنوان", "مقرر الأسبوع"),
-            "desc": parsed_data.get("الوصف", "( حالات الواتس وفلاشات )"),
-            "day_prefix": parsed_data.get("بادئة الأيام", "فلاشة يوم"),
-            "link_text": parsed_data.get("نص الرابط", "إضغط هنا"),
-            "note": parsed_data.get("ملاحظة", "دروس الملزمة مقسمة على ستة أيام"),
-            "footer": parsed_data.get("خاتمة", "تم بحمد الله رب العالمين")
-        }}, upsert=True)
-
+    # 🌟 إدخال قنوات جديدة 🌟
+    if state == "WAIT_CHAN_ID" and await has_perm(user_id, "publish"):
+        ch = text.strip()
+        if not ch.startswith('@') and not ch.startswith('-100'):
+            sent_msg = await update.message.reply_text("⚠️ معرّف القناة يجب أن يبدأ بـ @ أو -100")
+            return
+        await db.settings.update_one({"_id": "channels"}, {"$addToSet": {"list": ch}}, upsert=True)
         await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
         await clean_chat_history(user_id, chat_id, context)
-        sent_msg = await update.message.reply_text("✅ **تم حفظ قالب مقرر الأسبوع بنجاح!**", parse_mode="Markdown", reply_markup=kb)
+        btns = [[InlineKeyboardButton("🔙 | العودة لإدارة القنوات", callback_data="admin_channels")]]
+        sent_msg = await update.message.reply_text(f"✅ تم إضافة القناة ({ch}) بنجاح!", reply_markup=InlineKeyboardMarkup(btns))
+        await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
+        return
+
+    if state == "WAIT_TPL_NAME":
+        temp_data["tpl_name"] = text.strip()
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_TPL_CONTENT", "temp_data": temp_data}})
+        await clean_chat_history(user_id, chat_id, context)
+        msg = f"""✅ تم اختيار اسم القالب: **{text}**
+
+✍️ أرسل الآن محتوى القالب وتصميمه.
+استخدم هذه المتغيرات (بالأقواس المعكوفة) لكي يقوم البوت باستبدالها تلقائياً بالروابط الحقيقية:
+`{{سلسلة}}` ، `{{درس}}` ، `{{تاريخ}}` ، `{{ملزمة}}` ، `{{ريلز}}` ، `{{صوت}}` ، `{{ملخص}}` ، `{{تذييل}}`
+
+مثال لتصميم مقرر أسبوعي:
+<blockquote>مقرر الأسبوع ❞</blockquote>
+<b>ملزمة- {{درس}}</b>
+<blockquote>يوم السبت <a href='{{ملخص}}'>إضغط هنا</a> ❞</blockquote>
+{{تذييل}}"""
+        sent_msg = await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
+        await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
+        return
+
+    if state == "WAIT_TPL_CONTENT":
+        tpl_name = temp_data.get("tpl_name", "قالب جديد")
+        await db.templates.insert_one({"name": tpl_name, "content": text})
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
+        await clean_chat_history(user_id, chat_id, context)
+        btns = [[InlineKeyboardButton("🔙 | العودة للقوالب", callback_data="admin_tpl_menu")]]
+        sent_msg = await update.message.reply_text(f"🎉 **تم حفظ قالب ({tpl_name}) بنجاح!**\nسيكون متاحاً الآن بشكل دائم في خيارات النشر.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
@@ -448,7 +457,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.settings.update_one({"_id": "bot_settings"}, {"$set": {"footer_text": text}}, upsert=True)
         await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
         await clean_chat_history(user_id, chat_id, context)
-        sent_msg = await update.message.reply_text("✅ **تم حفظ نص/رابط الاشتراك بنجاح!**", parse_mode="Markdown", reply_markup=kb)
+        sent_msg = await update.message.reply_text("✅ **تم حفظ نص/رابط التذييل بنجاح!**", parse_mode="Markdown", reply_markup=kb)
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
@@ -513,7 +522,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if CHANNEL_ID:
             try:
                 await context.bot.send_poll(chat_id=CHANNEL_ID, question=temp_data["poll_q"], options=options, is_anonymous=True)
-                sent_msg = await update.message.reply_text("🎉 **تم نشر الاستفتاء في القناة!**", reply_markup=kb)
+                sent_msg = await update.message.reply_text("🎉 **تم نشر الاستفتاء في القناة الافتراضية!**", reply_markup=kb)
                 await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
                 return
             except Exception as e: 
@@ -553,6 +562,49 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
     if data == "ignore": return 
 
+    # ================= 🌟 إدارة القنوات 🌟 =================
+    if data == "admin_channels" and await has_perm(user_id, "publish"):
+        channels_doc = await db.settings.find_one({"_id": "channels"})
+        channels = channels_doc.get("list", []) if channels_doc else []
+        btns = []
+        for ch in channels:
+            btns.append([InlineKeyboardButton(f"🗑️ حذف ({ch})", callback_data=f"delchan_{ch}")])
+        btns.append([InlineKeyboardButton("➕ | إضافة قناة جديدة", callback_data="add_chan")])
+        btns.append([InlineKeyboardButton("🔙 | رجوع للوحة", callback_data="admin_menu")])
+        return await query.edit_message_text("📡 **إدارة قنوات النشر المتعددة:**\nأضف القنوات هنا لتتمكن من اختيارها عند نشر أي درس:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+
+    if data == "add_chan" and await has_perm(user_id, "publish"):
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_CHAN_ID"}})
+        return await query.edit_message_text("✍️ أرسل معرّف القناة (مثال: `@almashro` أو `-100123456`):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
+
+    if data.startswith("delchan_") and await has_perm(user_id, "publish"):
+        ch = data.replace("delchan_", "")
+        await db.settings.update_one({"_id": "channels"}, {"$pull": {"list": ch}})
+        return await query.edit_message_text(f"✅ تم حذف القناة ({ch}) بنجاح!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin_channels")]]))
+
+    # ================= 🌟 إدارة القوالب 🌟 =================
+    if data == "admin_tpl_menu" and await has_perm(user_id, "publish"):
+        templates = await db.templates.find({}).to_list(length=None)
+        btns = []
+        for t in templates:
+            btns.append([InlineKeyboardButton(f"📄 | {t['name']}", callback_data="ignore")])
+            btns.append([InlineKeyboardButton("🗑️ حذف هذا القالب", callback_data=f"deltpl_{str(t['_id'])}")])
+        
+        btns.append([InlineKeyboardButton("➕ | إنشاء قالب جديد", callback_data="add_tpl")])
+        btns.append([InlineKeyboardButton("🔙 | رجوع للوحة", callback_data="admin_menu")])
+        return await query.edit_message_text("🎨 **إدارة قوالب النشر الديناميكية:**\nيمكنك إضافة عدد لا نهائي من القوالب من هنا:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+
+    if data == "add_tpl" and await has_perm(user_id, "publish"):
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_TPL_NAME"}})
+        return await query.edit_message_text("✍️ أرسل الآن **اسم القالب الجديد**\n(مثال: قالب خطب الجمعة، قالب السيرة، الخ):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
+
+    if data.startswith("deltpl_") and await has_perm(user_id, "publish"):
+        tpl_id = data.replace("deltpl_", "")
+        await db.templates.delete_one({"_id": ObjectId(tpl_id)})
+        return await query.edit_message_text("✅ تم حذف القالب بنجاح!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للقوالب", callback_data="admin_tpl_menu")]]))
+
+    # ==========================================================
+
     if data.startswith("adm_tgl_") and user_id == OWNER_ID:
         perm_key = data.replace("adm_tgl_", "")
         temp_data = user.get("temp_data", {})
@@ -580,32 +632,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.admins.update_one({"_id": target_id}, {"$set": {"permissions": perms}}, upsert=True)
         return await query.edit_message_text(f"✅ تم تحديث الصلاحيات بنجاح!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin_manage")]]))
 
-    # 🌟 زر تعديل مسودة قالب الأسبوع 🌟
-    if data == "admin_edit_weekly" and await has_perm(user_id, "publish"):
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_WEEKLY_TPL"}})
-        
-        # استخراج البيانات الحالية أو وضع الافتراضية
-        settings = await db.settings.find_one({"_id": "weekly_tpl"}) or {}
-        c_title = settings.get("title", "مقرر الأسبوع")
-        c_desc = settings.get("desc", "( حالات الواتس وفلاشات )")
-        c_prefix = settings.get("day_prefix", "فلاشة يوم")
-        c_link = settings.get("link_text", "إضغط هنا")
-        c_note = settings.get("note", "دروس الملزمة مقسمة على ستة أيام")
-        c_footer = settings.get("footer", "تم بحمد الله رب العالمين")
-
-        msg = f"""✍️ **تعديل مسميات قالب مقرر الأسبوع:**
-
-قم بـ **نسخ** الرسالة الموجودة في الأسفل بالكامل، قم بتعديل الكلمات الموجودة بعد علامة النقطتين (`:`). ثم أرسلها لي هنا في المحادثة لكي يتم حفظها:
-
---- نسخ من الأسفل ---
-العنوان: {c_title}
-الوصف: {c_desc}
-بادئة الأيام: {c_prefix}
-نص الرابط: {c_link}
-ملاحظة: {c_note}
-خاتمة: {c_footer}"""
-        return await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
-
     if data == "admin_edit_footer" and await has_perm(user_id, "publish"):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_FOOTER_TEXT"}})
         msg = "✍️ أرسل الآن **النص مع الرابط** الذي تريده أن يظهر كـ (تذييل) أسفل الدروس المنشورة:\n\n*(الوضع الافتراضي الحالي سيكون هو النص القديم إذا لم تقم بتعديله)*"
@@ -618,7 +644,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cats = await db.library.aggregate(pipeline).to_list(length=None)
             GLOBAL_CACHE["categories"] = [c["_id"] for c in cats if c["_id"] and str(c["_id"]).lower() != 'nan']
         btns = [[InlineKeyboardButton(f"📁 | {c}", callback_data=f"pubc_{c[:50]}")] for c in GLOBAL_CACHE["categories"]]
-        btns.append([InlineKeyboardButton("🔙 | رجوع", callback_data="admin_menu")])
+        btns.append([InlineKeyboardButton("🔙 | رجوع للوحة الإدارة", callback_data="admin_menu")])
         return await query.edit_message_text("📢 **نشر درس للقناة:**\nاختر السلسلة التي تود نشر درس منها:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data.startswith("pubc_"):
@@ -639,15 +665,20 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         temp_data["pub_les"] = lesson_name
         
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": temp_data}})
-        btns = [
-            [InlineKeyboardButton("📝 | قالب كلاسيكي (نصي)", callback_data="pubfmt_text")], 
-            [InlineKeyboardButton("🔲 | قالب الأزرار الشفافة", callback_data="pubfmt_btns")],
-            [InlineKeyboardButton("📅 | قالب مقرر الأسبوع", callback_data="pubfmt_weekly")],
-            [InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")]
-        ]
+        
+        # 🌟 جلب قوالبك الخاصة فقط + قالب الأزرار الكلاسيكي 🌟
+        templates = await db.templates.find({}).to_list(length=None)
+        btns = []
+        for t in templates:
+            btns.append([InlineKeyboardButton(f"📄 | {t['name']}", callback_data=f"pubfmt_tpl_{str(t['_id'])}")])
+        
+        btns.append([InlineKeyboardButton("📝 | قالب النص الكلاسيكي", callback_data="pubfmt_text")])
+        btns.append([InlineKeyboardButton("🔲 | قالب الأزرار الشفافة", callback_data="pubfmt_btns")])
+        btns.append([InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")])
+        
         return await query.edit_message_text(f"✅ تم اختيار: **{lesson_name}**\n\nاختر القالب الذي تفضله لتوليد المسودة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
-    # ================= 🌟 توليد المسودات الديناميكية 🌟 =================
+    # ================= 🌟 تعبئة الروابط ومعاينة المسودة 🌟 =================
     if data.startswith("pubfmt_"):
         fmt_type = data.replace("pubfmt_", "")
         user = await db.users.find_one({"_id": user_id})
@@ -655,6 +686,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cat = temp_data.get("pub_cat", "عام")
         les = temp_data.get("pub_les", "عام")
         date_txt = get_auto_arabic_date()
+        footer_content = await get_footer_text()
 
         items = await db.library.find({"lesson": les}).to_list(length=None)
         links = {"كامل الملزمة": None, "اليوم الثقافي": None, "ريلز": None, "كلمات من نور": None, "ملخص الملزمة": None}
@@ -668,80 +700,81 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif "كلمات" in f_type: links["كلمات من نور"] = safe_link
                 else: links["كامل الملزمة"] = safe_link
         
-        footer_content = await get_footer_text()
-        
-        # 🌟 1. قالب مقرر الأسبوع (ديناميكي وقابل للتعديل) 🌟
-        if fmt_type == "weekly":
-            safe_les = html.escape(les)
-            flash_link = links.get("ملخص الملزمة", links.get("كامل الملزمة", f"https://t.me/{CHANNEL_ID.replace('@','')}"))
-            
-            # جلب مسميات القالب من قاعدة البيانات
-            tpl_settings = await db.settings.find_one({"_id": "weekly_tpl"}) or {}
-            t_title = tpl_settings.get("title", "مقرر الأسبوع")
-            t_desc = tpl_settings.get("desc", "( حالات الواتس وفلاشات )")
-            t_prefix = tpl_settings.get("day_prefix", "فلاشة يوم")
-            t_link = tpl_settings.get("link_text", "إضغط هنا")
-            t_note = tpl_settings.get("note", "دروس الملزمة مقسمة على ستة أيام")
-            t_footer = tpl_settings.get("footer", "تم بحمد الله رب العالمين")
+        ch_link = f"https://t.me/{CHANNEL_ID.replace('@','')}"
+        l_nass = links["كامل الملزمة"] or ch_link
+        l_vid = links["ريلز"] or ch_link
+        l_aud = links["اليوم الثقافي"] or ch_link
+        l_img = links["ملخص الملزمة"] or ch_link
 
-            draft_text = f"<blockquote>{html.escape(t_title)} ❞</blockquote>\n\n"
-            draft_text += f"<b>ملزمة- {safe_les}</b>\n\n"
-            draft_text += f"{html.escape(t_desc)}\n\n"
-
-            days = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس"]
-            for day in days:
-                draft_text += f"<blockquote>{html.escape(t_prefix)} {day} <a href='{flash_link}'>{html.escape(t_link)}</a> ❞</blockquote>\n\n"
-
-            draft_text += f"<blockquote>{html.escape(t_note)} ❞</blockquote>\n\n"
-            draft_text += f"{html.escape(t_footer)}\n"
-            draft_text += f"\n{html.escape(footer_content)}"
-
-            temp_data["draft_format"] = "html_weekly"
-            temp_data["draft_text"] = draft_text
-            await db.users.update_one({"_id": user_id}, {"$set": {"temp_data": temp_data}})
-            btns = [[InlineKeyboardButton("✅ | انشر في القناة الآن", callback_data="pubconf_yes")], [InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")]]
-            return await query.edit_message_text(f"📅 **معاينة مسودة (مقرر الأسبوع):**\n\n{draft_text}\n\n--- \nهل تريد النشر؟", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(btns), disable_web_page_preview=False)
-
-        # 🌟 2. قالب كلاسيكي 🌟
-        elif fmt_type == "text":
-            safe_cat = html.escape(cat)
-            safe_les = html.escape(les)
-            draft_text = f"<b>{safe_cat} - {safe_les}</b>\n\nدرس اليوم {date_txt}\n\n"
-            
-            for k, v in links.items():
-                if v: draft_text += f"<blockquote>{k} <a href='{v}'>إضغط هنا</a> ❞</blockquote>\n"
-            draft_text += f"\n\n{html.escape(footer_content)}"
-            
-            temp_data["draft_format"] = "html_text"
-            temp_data["draft_text"] = draft_text
-            await db.users.update_one({"_id": user_id}, {"$set": {"temp_data": temp_data}})
-            btns = [[InlineKeyboardButton("✅ | انشر في القناة الآن", callback_data="pubconf_yes")], [InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")]]
-            return await query.edit_message_text(f"📝 **معاينة مسودة (نصي):**\n\n{draft_text}\n\n--- \nهل تريد النشر؟", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(btns), disable_web_page_preview=False)
-            
-        # 🌟 3. قالب الأزرار الشفافة 🌟
-        elif fmt_type == "btns":
+        if fmt_type == "btns":
             draft_text = f"{cat} - {les}\n\nدرس اليوم {date_txt}\n\n{footer_content}"
             temp_data["draft_format"] = "btns"
             temp_data["draft_text"] = draft_text
             await db.users.update_one({"_id": user_id}, {"$set": {"temp_data": temp_data}})
-            inline_kb, row = [], []
-            for k, v in links.items():
-                if v:
-                    row.append(InlineKeyboardButton(k, url=v))
-                    if len(row) == 2: inline_kb.append(row); row = []
-            if row: inline_kb.append(row)
-            inline_kb.append([InlineKeyboardButton("✅ | انشر في القناة الآن", callback_data="pubconf_yes")])
-            inline_kb.append([InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")])
-            return await query.edit_message_text(f"🔲 **معاينة مسودة (أزرار):**\n\n{draft_text}", reply_markup=InlineKeyboardMarkup(inline_kb), disable_web_page_preview=False)
+            btns = [[InlineKeyboardButton("✅ | المتابعة واختيار القناة", callback_data="pub_select_chan")], [InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")]]
+            return await query.edit_message_text(f"🔲 **معاينة المسودة (أزرار):**\n\n{draft_text}", reply_markup=InlineKeyboardMarkup(btns), disable_web_page_preview=False)
 
-    if data == "pubconf_yes":
+        elif fmt_type == "text":
+            safe_cat = html.escape(cat)
+            safe_les = html.escape(les)
+            draft_text = f"<b>{safe_cat} - {safe_les}</b>\n\nدرس اليوم {date_txt}\n\n"
+            for k, v in links.items():
+                if v: draft_text += f"<blockquote>{k} <a href='{v}'>إضغط هنا</a> ❞</blockquote>\n"
+            draft_text += f"\n\n{html.escape(footer_content)}"
+            temp_data["draft_format"] = "html_text"
+            temp_data["draft_text"] = draft_text
+            await db.users.update_one({"_id": user_id}, {"$set": {"temp_data": temp_data}})
+            btns = [[InlineKeyboardButton("✅ | المتابعة واختيار القناة", callback_data="pub_select_chan")], [InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")]]
+            return await query.edit_message_text(f"📝 **معاينة المسودة:**\n\n{draft_text}\n\n--- \nهل تريد المتابعة؟", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(btns), disable_web_page_preview=False)
+
+        elif fmt_type.startswith("tpl_"):
+            tpl_id = fmt_type.replace("tpl_", "")
+            tpl_doc = await db.templates.find_one({"_id": ObjectId(tpl_id)})
+            if not tpl_doc: return await query.answer("القالب غير موجود!", show_alert=True)
+            
+            draft_text = tpl_doc["content"]
+            draft_text = draft_text.replace("{سلسلة}", html.escape(cat))
+            draft_text = draft_text.replace("{درس}", html.escape(les))
+            draft_text = draft_text.replace("{تاريخ}", date_txt)
+            draft_text = draft_text.replace("{ملزمة}", l_nass)
+            draft_text = draft_text.replace("{ريلز}", l_vid)
+            draft_text = draft_text.replace("{صوت}", l_aud)
+            draft_text = draft_text.replace("{ملخص}", l_img)
+            draft_text = draft_text.replace("{تذييل}", html.escape(footer_content))
+
+            temp_data["draft_format"] = "html_dynamic"
+            temp_data["draft_text"] = draft_text
+            await db.users.update_one({"_id": user_id}, {"$set": {"temp_data": temp_data}})
+            
+            btns = [[InlineKeyboardButton("✅ | المتابعة واختيار القناة", callback_data="pub_select_chan")], [InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")]]
+            try:
+                return await query.edit_message_text(f"📝 **معاينة المسودة:**\n\n{draft_text}\n\n--- \nهل تريد المتابعة؟", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(btns), disable_web_page_preview=False)
+            except Exception as e:
+                return await query.edit_message_text(f"❌ **يوجد خطأ في كود HTML الخاص بهذا القالب!**\nيرجى تعديل القالب والتأكد من صحة الأقواس.\n\n`{e}`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للقوالب", callback_data="admin_tpl_menu")]]))
+
+    # ================= 🌟 اختيار القناة للنشر 🌟 =================
+    if data == "pub_select_chan":
+        channels_doc = await db.settings.find_one({"_id": "channels"})
+        channels = channels_doc.get("list", []) if channels_doc else []
+        if CHANNEL_ID and CHANNEL_ID not in channels: channels.insert(0, CHANNEL_ID)
+        
+        btns = [[InlineKeyboardButton(f"📡 انشر في: {ch}", callback_data=f"pconf_{ch}")] for ch in channels]
+        btns.append([InlineKeyboardButton("➕ إضافة قناة جديدة", callback_data="admin_channels")])
+        btns.append([InlineKeyboardButton("🔙 تراجع للمسودة", callback_data="admin_pub_menu")])
+        
+        return await query.edit_message_text("اختر **القناة** التي تريد النشر فيها الآن:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+
+    # ================= 🌟 تنفيذ النشر وتأكيد العودة 🌟 =================
+    if data.startswith("pconf_"):
+        target_channel = data.replace("pconf_", "")
         user = await db.users.find_one({"_id": user_id})
         temp_data = user.get("temp_data", {})
         draft_text = temp_data.get("draft_text", "")
-        draft_format = temp_data.get("draft_format", "html_text")
+        draft_format = temp_data.get("draft_format", "")
+        
         try:
             if draft_format.startswith("html"): 
-                await context.bot.send_message(chat_id=CHANNEL_ID, text=draft_text, parse_mode="HTML", disable_web_page_preview=False)
+                await context.bot.send_message(chat_id=target_channel, text=draft_text, parse_mode="HTML", disable_web_page_preview=False)
             else:
                 les = temp_data.get("pub_les", "")
                 items = await db.library.find({"lesson": les}).to_list(length=None)
@@ -761,11 +794,14 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         row.append(InlineKeyboardButton(k, url=v))
                         if len(row) == 2: inline_kb.append(row); row = []
                 if row: inline_kb.append(row)
-                await context.bot.send_message(chat_id=CHANNEL_ID, text=draft_text, reply_markup=InlineKeyboardMarkup(inline_kb), disable_web_page_preview=False)
+                await context.bot.send_message(chat_id=target_channel, text=draft_text, reply_markup=InlineKeyboardMarkup(inline_kb), disable_web_page_preview=False)
                 
             await db.users.update_one({"_id": user_id}, {"$set": {"temp_data": {}}})
-            return await query.edit_message_text("🎉 **تم النشر في القناة بنجاح!**", parse_mode="Markdown")
-        except Exception as e: return await query.edit_message_text(f"❌ حدث خطأ.\n`{e}`", parse_mode="Markdown")
+            btns = [[InlineKeyboardButton("🔙 | العودة للوحة الإدارة", callback_data="admin_menu")]]
+            return await query.edit_message_text(f"🎉 **تم النشر بنجاح في ({target_channel})!**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+        except Exception as e: 
+            btns = [[InlineKeyboardButton("🔙 | العودة", callback_data="admin_menu")]]
+            return await query.edit_message_text(f"❌ حدث خطأ.\nتأكد أن البوت مرفوع كـ (مشرف) في هذه القناة وأن المعرف صحيح.\n`{e}`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
     # ===============================================================
 
     if data.startswith("utype_"):
@@ -856,21 +892,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
             return await context.bot.send_document(chat_id=chat_id, document=output, filename="تقرير.xlsx", caption="📊 **تقرير الإحصائيات**", parse_mode="Markdown")
         except: return await context.bot.send_message(chat_id=chat_id, text="❌ حدث خطأ.")
-
-    if data == "admin_menu":
-        adm = await get_admin_doc(user_id)
-        if not adm: return
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
-        btns = []
-        if await has_perm(user_id, "publish"): 
-            btns.append([InlineKeyboardButton("📢 | نشر درس للقناة", callback_data="admin_pub_menu")])
-            btns.append([InlineKeyboardButton("🔗 | رابط الاشتراك", callback_data="admin_edit_footer"), InlineKeyboardButton("📅 | قالب الأسبوع", callback_data="admin_edit_weekly")])
-            btns.append([InlineKeyboardButton("📊 | إنشاء استفتاء", callback_data="admin_poll")])
-        if await has_perm(user_id, "questions"): btns.append([InlineKeyboardButton("➕ | إضافة سؤال لدرس", callback_data="admin_add_q")])
-        if await has_perm(user_id, "stats"): btns.append([InlineKeyboardButton("📈 | الإحصائيات", callback_data="admin_stats")])
-        if str(user_id) == OWNER_ID: btns.append([InlineKeyboardButton("👥 | إدارة المشرفين", callback_data="admin_manage")])
-        btns.append([InlineKeyboardButton("❌ | إغلاق", callback_data="admin_cancel")])
-        return await query.edit_message_text("⚙️ **لوحة التحكم:**", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data == "admin_add_q" and await has_perm(user_id, "questions"):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_Q_CAT"}})

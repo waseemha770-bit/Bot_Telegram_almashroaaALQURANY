@@ -520,6 +520,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
         return
 
+    # ================= حالات الإدخال النصي =================
     user = await db.users.find_one({"_id": user_id})
     state = user.get("state", "") if user else ""
     temp_data = user.get("temp_data", {}) if user else {}
@@ -724,33 +725,32 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
 
 # ==========================================
-# معالجة تفاعلات الأزرار
+# معالجة تفاعلات الأزرار القوية والمعزولة
 # ==========================================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id, user_id = query.message.chat_id, str(query.from_user.id)
     if await check_spam(user_id): return
     
-    user = await db.users.find_one({"_id": user_id})
-    last_msg_id = user.get("last_msg_id") if user else None
-    if last_msg_id and query.message.message_id != last_msg_id:
-        try: await context.bot.answer_callback_query(query.id, "⚠️ قائمة قديمة.", show_alert=True)
-        except: pass
-        return
-
+    # تمت إزالة شرط last_msg_id المزعج لضمان استجابة 100%
     data = query.data
+    try: await query.answer()
+    except: pass
+
     if data == "media_unavail":
         try: await context.bot.answer_callback_query(query.id, "⚠️ غير متوفر.", show_alert=True)
         except: pass
         return
 
-    try: await query.answer()
-    except: pass
     if data == "ignore": return 
 
+    user = await db.users.find_one({"_id": user_id})
+
+    # ================= 🌟 الأزرار الأساسية للإلغاء والعودة 🌟 =================
     if data == "admin_cancel":
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "last_msg_id": None}}, upsert=True)
-        await query.message.delete()
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}}, upsert=True)
+        try: await query.edit_message_text("✅ **تم إلغاء العملية.**", parse_mode="Markdown", reply_markup=None)
+        except: pass
         return
 
     if data == "admin_menu":
@@ -770,8 +770,11 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if str(user_id) == OWNER_ID: 
             btns.append([InlineKeyboardButton("👥 | إدارة المشرفين", callback_data="admin_manage")])
         btns.append([InlineKeyboardButton("❌ | إغلاق اللوحة", callback_data="admin_cancel")])
-        return await query.edit_message_text("⚙️ **لوحة التحكم والإدارة:**\nاختر الإجراء المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        try: await query.edit_message_text("⚙️ **لوحة التحكم والإدارة:**\nاختر الإجراء المطلوب:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        except: pass
+        return
 
+    # ================= 🌟 إدارة المحتوى السلاسل والدروس المباشر 🌟 =================
     if data == "admin_content_mgr" and await has_perm(user_id, "upload"):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
         if "categories" not in GLOBAL_CACHE: 
@@ -793,12 +796,10 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lessons = await db.library.aggregate(pipeline).to_list(length=None)
         
         btns = [[InlineKeyboardButton(f"📖 | {idx}- {les['_id']}", callback_data=f"mgr_les_{str(les['doc_id'])}")] for idx, les in enumerate(lessons, 1)]
-        
         btns.append([InlineKeyboardButton("➕ | إضافة درس جديد", callback_data=f"mgr_add_les_{cat_name[:40]}")])
         btns.append([InlineKeyboardButton("✏️ | تعديل اسم السلسلة", callback_data=f"mgr_edit_cat_{cat_name[:40]}")])
         btns.append([InlineKeyboardButton("🗑️ | حذف السلسلة (خطير)", callback_data=f"mgr_del_cat_{cat_name[:40]}")])
         btns.append([InlineKeyboardButton("🔙 | رجوع للسلاسل", callback_data="admin_content_mgr")])
-        
         return await query.edit_message_text(f"📁 السلسلة: **{cat_name}**\nيمكنك إضافة دروس جديدة أو التعديل:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
     if data.startswith("mgr_add_les_"):
@@ -990,7 +991,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             btns.append([InlineKeyboardButton(f"📄 | {t['name']}", callback_data=f"pubfmt_tpl_{str(t['_id'])}")])
         btns.append([InlineKeyboardButton("📝 | قالب النص الكلاسيكي (تلقائي المسميات)", callback_data="pubfmt_text")])
         btns.append([InlineKeyboardButton("🔲 | قالب الأزرار الشفافة", callback_data="pubfmt_btns")])
-        btns.append([InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")])
+        btns.append([InlineKeyboardButton("❌ | إلغاء العملية", callback_data="admin_cancel")])
         
         return await query.edit_message_text(f"✅ تم اختيار: **{lesson_name}**\n\nاختر القالب الذي تفضله لتوليد المنشور:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 

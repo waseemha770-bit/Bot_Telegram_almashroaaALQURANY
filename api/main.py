@@ -235,9 +235,6 @@ async def show_lesson_ui(context, chat_id, doc_id, message_id=None, user_id=None
             if user_id: await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
     except: pass
 
-# ==========================================
-# معالجة رفع الملفات والمحتوى والإكسل
-# ==========================================
 async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
@@ -248,11 +245,12 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     state = user.get("state", "") if user else ""
     temp_data = user.get("temp_data", {}) if user else {}
     
+    # 🌟 استقبال ملف أسئلة الإكسل للدرس المحدد 🌟
     if state == "WAIT_Q_EXCEL" and msg.document:
         if not msg.document.file_name.endswith(('.xlsx', '.xls')):
             return await msg.reply_text("⚠️ يرجى رفع ملف الاختبار بصيغة Excel (.xlsx) فقط.")
         await clean_chat_history(user_id, chat_id, context)
-        sent_msg = await msg.reply_text("⏳ جاري قراءة وتحليل ملف الاختبار (مزامنة ذكية)...")
+        sent_msg = await msg.reply_text("⏳ جاري قراءة وتحليل ملف الاختبار...")
         try:
             file = await context.bot.get_file(msg.document.file_id)
             byte_array = await file.download_as_bytearray()
@@ -261,7 +259,7 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             cat = temp_data.get("q_cat", "عام")
             les = temp_data.get("q_les", "عام")
-            count_add, count_del = 0, 0
+            count = 0
 
             for _, row in df.iterrows():
                 cols = [str(c).strip() for c in df.columns]
@@ -269,38 +267,32 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 ans_col = next((c for c in cols if 'صحيح' in c), None)
 
                 if q_col and ans_col and pd.notna(row.get(q_col)) and pd.notna(row.get(ans_col)):
-                    q_val = str(row[q_col]).strip()
-                    ans_val = str(row[ans_col]).strip()
-                    
-                    if ans_val == "حذف":
-                        await db.questions.delete_many({"category": cat, "lesson": les, "question": q_val})
-                        count_del += 1
-                    else:
-                        wrongs = [str(row[wc]).strip() for wc in df.columns if ('خاطئة' in str(wc) or 'خطأ' in str(wc)) and pd.notna(row.get(wc))]
-                        await db.questions.update_one(
-                            {"category": cat, "lesson": les, "question": q_val},
-                            {"$set": {"correct": ans_val, "wrong": wrongs}},
-                            upsert=True
-                        )
-                        count_add += 1
+                    wrongs = [str(row[wc]).strip() for wc in df.columns if ('خاطئة' in str(wc) or 'خطأ' in str(wc)) and pd.notna(row.get(wc))]
+                    await db.questions.insert_one({
+                        "category": cat,
+                        "lesson": les,
+                        "question": str(row[q_col]).strip(),
+                        "correct": str(row[ans_col]).strip(),
+                        "wrong": wrongs,
+                        "correct_answers": 0,
+                        "wrong_answers": 0
+                    })
+                    count += 1
 
             await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
             clear_cache()
             await context.bot.delete_message(chat_id=chat_id, message_id=sent_msg.message_id)
-            res_txt = f"🎉 **تمت مزامنة الاختبار بذكاء لدرس ({les})!**\n"
-            if count_add > 0: res_txt += f"✅ تم إضافة/تحديث {count_add} سؤال.\n"
-            if count_del > 0: res_txt += f"🗑️ تم حذف {count_del} سؤال.\n"
-            final_msg = await msg.reply_text(res_txt, parse_mode="Markdown")
+            final_msg = await msg.reply_text(f"🎉 **تم إضافة {count} سؤال لاختبار درس ({les}) بنجاح!**", parse_mode="Markdown")
             await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": final_msg.message_id}})
             return
         except Exception as e:
             await context.bot.delete_message(chat_id=chat_id, message_id=sent_msg.message_id)
-            return await msg.reply_text(f"❌ حدث خطأ أثناء قراءة ملف الإكسل:\n`{e}`", parse_mode="Markdown")
+            return await msg.reply_text(f"❌ حدث خطأ أثناء قراءة ملف الإكسل للاختبار:\n`{e}`", parse_mode="Markdown")
 
     if state == "WAIT_EXCEL" and msg.document:
         if not msg.document.file_name.endswith(('.xlsx', '.xls')): return await msg.reply_text("⚠️ يرجى رفع ملف بصيغة Excel (.xlsx) فقط.")
         await clean_chat_history(user_id, chat_id, context)
-        await msg.reply_text("⏳ جاري تحليل قاعدة البيانات وتطبيق نظام المزامنة الذكية...")
+        await msg.reply_text("⏳ جاري تحليل قاعدة البيانات وتطبيق فلتر منع التكرار...")
         try:
             file = await context.bot.get_file(msg.document.file_id)
             byte_array = await file.download_as_bytearray()
@@ -314,10 +306,11 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 elif any('السلسلة' in c for c in cols) and any('الدرس' in c or 'المحاضرة' in c for c in cols): df_lib = df
 
             if df_lib is not None:
+                await db.library.delete_many({}) 
                 types_docs = await db.content_types.find({}).to_list(length=None)
                 name_to_id = {t["name"].lower(): t["_id"] for t in types_docs}
 
-                count_add, count_del = 0, 0
+                count, skipped, seen_links = 0, 0, set()
                 for _, row in df_lib.iterrows():
                     cat_col = next((c for c in df_lib.columns if 'السلسلة' in str(c)), None)
                     les_col = next((c for c in df_lib.columns if 'الدرس' in str(c) or 'المحاضرة' in str(c)), None)
@@ -325,9 +318,6 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                     link_col = next((c for c in df_lib.columns if 'الرابط' in str(c)), None)
 
                     if les_col and cat_col and pd.notna(row.get(les_col)) and pd.notna(row.get(cat_col)):
-                        cat_val = str(row[cat_col]).strip()
-                        les_val = str(row[les_col]).strip()
-                        
                         excel_type_val = str(row.get(type_col, '')).strip()
                         t_val = "type_text"
                         for t_name, t_id in name_to_id.items():
@@ -338,58 +328,40 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                         elif "صوت" in excel_type_val: t_val = "type_audio"
                         elif "صور" in excel_type_val or "فلاشة" in excel_type_val: t_val = "type_image"
 
-                        l_val = str(row.get(link_col, '')).strip() if link_col and pd.notna(row.get(link_col)) else ""
-                        
-                        if l_val == "حذف":
-                            await db.library.delete_many({"category": cat_val, "lesson": les_val, "type": t_val})
-                            count_del += 1
-                        elif l_val and l_val.lower() not in ['nan', 'none', 'null']:
-                            link_str = l_val
-                            await db.library.update_one(
-                                {"category": cat_val, "lesson": les_val, "type": t_val},
-                                {"$set": {"file_id": link_str, "updated_at": time.time()}},
-                                upsert=True
-                            )
-                            count_add += 1
-                
-                updates_log += f"✅ تم إضافة/تحديث {count_add} محتوى دراسي.\n"
-                if count_del > 0: updates_log += f"🗑️ تم حذف {count_del} محتوى دراسي.\n"
+                        l_val = str(row.get(link_col, '')).strip() if link_col and pd.notna(row.get(link_col)) else None
+                        if l_val and str(l_val).lower() not in ['', 'nan', 'none', 'null']:
+                            link_str = str(l_val).strip()
+                            clean_id = link_str.split('/')[-1] if '/' in link_str else link_str
+                            if clean_id in seen_links: skipped += 1; continue
+                            seen_links.add(clean_id)
+                        await db.library.insert_one({"category": str(row[cat_col]).strip(), "lesson": str(row[les_col]).strip(), "type": t_val, "file_id": l_val, "created_at": time.time()})
+                        count += 1
+                updates_log += f"✅ تم استيراد {count} محتوى.\n"
+                if skipped > 0: updates_log += f"⚠️ تم تخطي {skipped} رابط مكرر بالملف.\n"
                 
             if df_q is not None:
-                count_q_add, count_q_del = 0, 0
+                await db.questions.delete_many({})
+                count_q = 0
                 for _, row in df_q.iterrows():
                     q_col = next((c for c in df_q.columns if 'السؤال' in str(c)), None)
                     ans_col = next((c for c in df_q.columns if 'الصحيح' in str(c)), None)
                     cat_col = next((c for c in df_q.columns if 'السلسلة' in str(c)), None)
                     les_col = next((c for c in df_q.columns if 'الدرس' in str(c) or 'المحاضرة' in str(c)), None)
-                    
                     if q_col and ans_col and pd.notna(row.get(q_col)) and pd.notna(row.get(ans_col)):
-                        q_val = str(row[q_col]).strip()
-                        ans_val = str(row[ans_col]).strip()
+                        wrongs = [str(row[wc]).strip() for wc in [c for c in df_q.columns if 'خاطئة' in str(c) or 'خطأ' in str(c)] if pd.notna(row.get(wc))]
                         cat_val = str(row.get(cat_col, 'عام')).strip() if cat_col and pd.notna(row.get(cat_col)) else 'عام'
                         les_val = str(row.get(les_col, 'عام')).strip() if les_col and pd.notna(row.get(les_col)) else 'عام'
-                        
-                        if ans_val == "حذف":
-                            await db.questions.delete_many({"category": cat_val, "lesson": les_val, "question": q_val})
-                            count_q_del += 1
-                        else:
-                            wrongs = [str(row[wc]).strip() for wc in df_q.columns if ('خاطئة' in str(wc) or 'خطأ' in str(wc)) and pd.notna(row.get(wc))]
-                            await db.questions.update_one(
-                                {"category": cat_val, "lesson": les_val, "question": q_val},
-                                {"$set": {"correct": ans_val, "wrong": wrongs}},
-                                upsert=True
-                            )
-                            count_q_add += 1
-                updates_log += f"✅ تم إضافة/تحديث {count_q_add} سؤال عام.\n"
-                if count_q_del > 0: updates_log += f"🗑️ تم حذف {count_q_del} سؤال عام.\n"
+                        await db.questions.insert_one({"category": cat_val, "lesson": les_val, "question": str(row[q_col]).strip(), "correct": str(row[ans_col]).strip(), "wrong": wrongs, "correct_answers": 0, "wrong_answers": 0})
+                        count_q += 1
+                updates_log += f"✅ تم استيراد {count_q} سؤال."
 
-            if not updates_log: return await msg.reply_text("⚠️ لم يتم العثور على أي تحديثات. تأكد من تطابق الأعمدة.")
+            if not updates_log: return await msg.reply_text("⚠️ فشل الاستيراد: لم يتم العثور على أعمدة مطابقة.")
             await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}}, upsert=True)
             clear_cache() 
-            sent_msg = await msg.reply_text(f"🎉 **اكتملت المزامنة الذكية بنجاح!**\n\n{updates_log}", parse_mode="Markdown")
+            sent_msg = await msg.reply_text(f"🎉 **تم تحديث قاعدة البيانات بنجاح!**\n\n{updates_log}", parse_mode="Markdown")
             await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
             return
-        except Exception as e: return await msg.reply_text(f"❌ حدث خطأ أثناء المعالجة: `{e}`", parse_mode="Markdown")
+        except Exception: return await msg.reply_text("❌ حدث خطأ أثناء معالجة ملف الإكسل.")
 
     has_media = msg.document or msg.video or msg.audio or msg.voice or msg.photo
     if not state and has_media:
@@ -473,8 +445,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == '⚙️ لوحة الإدارة' and adm:
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
         btns = []
-        if await has_perm(user_id, "upload"):
-            btns.append([InlineKeyboardButton("📂 | إدارة السلاسل والدروس", callback_data="admin_content_mgr")]) # 🌟 إدارة المحتوى المباشر 🌟
         if await has_perm(user_id, "publish"):
             btns.append([InlineKeyboardButton("📢 | قسم النشر والقوالب", callback_data="admin_publishing_hub")])
             btns.append([InlineKeyboardButton("🎛️ | إدارة أنواع المحتوى", callback_data="admin_content_types")])
@@ -496,7 +466,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         btns = [[InlineKeyboardButton("✅ نعم، متأكد", callback_data="import_confirm")], [InlineKeyboardButton("❌ الإلغاء", callback_data="admin_cancel")]]
         
         await clean_chat_history(user_id, chat_id, context)
-        sent_msg = await update.message.reply_text("📥 **الاستيراد الذكي:**\nلن يتم مسح بياناتك القديمة! سيقوم البوت بتحديث الدروس الموجودة وإضافة الجديدة.\n\nهل أنت متأكد من الاستمرار؟", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        sent_msg = await update.message.reply_text("⚠️ سيتم مسح البيانات القديمة بالكامل.\nهل أنت متأكد من رغبتك بالاستمرار؟", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
@@ -526,61 +496,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user.get("state", "") if user else ""
     temp_data = user.get("temp_data", {}) if user else {}
 
-    # 🌟 إدخال بيانات إدارة المحتوى المباشر 🌟
-    if state == "WAIT_MGR_NEW_CAT":
-        new_cat = text.strip()
-        # إضافة سجل وهمي لتأسيس السلسلة
-        await db.library.insert_one({"category": new_cat, "lesson": "درس افتراضي", "type": "type_text", "file_id": None})
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
-        clear_cache()
-        await clean_chat_history(user_id, chat_id, context)
-        btns = [[InlineKeyboardButton("🔙 | العودة", callback_data="admin_content_mgr")]]
-        sent_msg = await update.message.reply_text(f"✅ تم إضافة السلسلة ({new_cat}) بنجاح!", reply_markup=InlineKeyboardMarkup(btns))
-        await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
-        return
-
-    if state == "WAIT_MGR_EDIT_CAT":
-        old_cat = temp_data.get("mgr_target_cat")
-        new_cat = text.strip()
-        await db.library.update_many({"category": old_cat}, {"$set": {"category": new_cat}})
-        await db.questions.update_many({"category": old_cat}, {"$set": {"category": new_cat}})
-        await db.lesson_stats.update_many({"category": old_cat}, {"$set": {"category": new_cat}})
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
-        clear_cache()
-        await clean_chat_history(user_id, chat_id, context)
-        btns = [[InlineKeyboardButton("🔙 | العودة", callback_data="admin_content_mgr")]]
-        sent_msg = await update.message.reply_text(f"✅ تم تعديل اسم السلسلة إلى ({new_cat}) بنجاح!", reply_markup=InlineKeyboardMarkup(btns))
-        await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
-        return
-
-    if state == "WAIT_MGR_NEW_LES":
-        target_cat = temp_data.get("mgr_target_cat")
-        new_les = text.strip()
-        await db.library.insert_one({"category": target_cat, "lesson": new_les, "type": "type_text", "file_id": None})
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
-        clear_cache()
-        await clean_chat_history(user_id, chat_id, context)
-        btns = [[InlineKeyboardButton("🔙 | العودة", callback_data=f"mgr_cat_view_{target_cat}")]]
-        sent_msg = await update.message.reply_text(f"✅ تم إضافة الدرس ({new_les}) بنجاح!", reply_markup=InlineKeyboardMarkup(btns))
-        await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
-        return
-
-    if state == "WAIT_MGR_EDIT_LES":
-        target_cat = temp_data.get("mgr_target_cat")
-        old_les = temp_data.get("mgr_target_les")
-        new_les = text.strip()
-        await db.library.update_many({"category": target_cat, "lesson": old_les}, {"$set": {"lesson": new_les}})
-        await db.questions.update_many({"category": target_cat, "lesson": old_les}, {"$set": {"lesson": new_les}})
-        await db.lesson_stats.update_many({"category": target_cat, "lesson": old_les}, {"$set": {"lesson": new_les}})
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
-        clear_cache()
-        await clean_chat_history(user_id, chat_id, context)
-        btns = [[InlineKeyboardButton("🔙 | العودة", callback_data=f"mgr_cat_view_{target_cat}")]]
-        sent_msg = await update.message.reply_text(f"✅ تم تعديل اسم الدرس إلى ({new_les}) بنجاح!", reply_markup=InlineKeyboardMarkup(btns))
-        await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
-        return
-
-    # بقية الحالات...
     if state == "WAIT_TYPE_DATA" and await has_perm(user_id, "publish"):
         parts = text.split(',')
         name = parts[0].strip()
@@ -753,83 +668,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
     if data == "ignore": return 
 
-    # ================= 🌟 إدارة محتوى السلاسل والدروس المباشر (الجديد) 🌟 =================
-    if data == "admin_content_mgr" and await has_perm(user_id, "upload"):
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
-        if "categories" not in GLOBAL_CACHE: 
-            pipeline = [{"$sort": {"_id": 1}}, {"$group": {"_id": "$category", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
-            cats = await db.library.aggregate(pipeline).to_list(length=None)
-            GLOBAL_CACHE["categories"] = [c["_id"] for c in cats if c["_id"] and str(c["_id"]).lower() != 'nan']
-        btns = [[InlineKeyboardButton(f"📁 | {c}", callback_data=f"mgr_cat_view_{c[:40]}")] for c in GLOBAL_CACHE["categories"]]
-        btns.append([InlineKeyboardButton("➕ | إضافة سلسلة جديدة", callback_data="mgr_add_cat")])
-        btns.append([InlineKeyboardButton("🔙 | رجوع للوحة الإدارة", callback_data="admin_menu")])
-        return await query.edit_message_text("📂 **إدارة السلاسل والدروس:**\nاختر سلسلة لتعديلها أو إضافة دروس إليها:", reply_markup=InlineKeyboardMarkup(btns))
-
-    if data == "mgr_add_cat" and await has_perm(user_id, "upload"):
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_MGR_NEW_CAT"}})
-        return await query.edit_message_text("✍️ أرسل اسم **السلسلة الجديدة**:\nسيتم إضافة درس افتراضي بداخلها لتأسيسها.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
-
-    if data.startswith("mgr_cat_view_"):
-        cat_name = data.replace("mgr_cat_view_", "")
-        pipeline = [{"$match": {"category": {"$regex": f"^{cat_name}"}}}, {"$sort": {"_id": 1}}, {"$group": {"_id": "$lesson", "doc_id": {"$first": "$_id"}}}, {"$sort": {"doc_id": 1}}]
-        lessons = await db.library.aggregate(pipeline).to_list(length=None)
-        
-        btns = [[InlineKeyboardButton(f"📖 | {idx}- {les['_id']}", callback_data=f"mgr_les_{str(les['doc_id'])}")] for idx, les in enumerate(lessons, 1)]
-        
-        btns.append([InlineKeyboardButton("➕ | إضافة درس جديد", callback_data=f"mgr_add_les_{cat_name[:40]}")])
-        btns.append([InlineKeyboardButton("✏️ | تعديل اسم السلسلة", callback_data=f"mgr_edit_cat_{cat_name[:40]}")])
-        btns.append([InlineKeyboardButton("🗑️ | حذف السلسلة (خطير)", callback_data=f"mgr_del_cat_{cat_name[:40]}")])
-        btns.append([InlineKeyboardButton("🔙 | رجوع للسلاسل", callback_data="admin_content_mgr")])
-        
-        return await query.edit_message_text(f"📁 السلسلة: **{cat_name}**\nيمكنك إضافة دروس جديدة أو التعديل:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
-
-    if data.startswith("mgr_add_les_"):
-        cat_name = data.replace("mgr_add_les_", "")
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_MGR_NEW_LES", "temp_data": {"mgr_target_cat": cat_name}}})
-        return await query.edit_message_text(f"✍️ أرسل اسم **الدرس الجديد** للسلسلة ({cat_name}):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
-
-    if data.startswith("mgr_edit_cat_"):
-        cat_name = data.replace("mgr_edit_cat_", "")
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_MGR_EDIT_CAT", "temp_data": {"mgr_target_cat": cat_name}}})
-        return await query.edit_message_text(f"✍️ أرسل **الاسم الجديد** بدلاً من ({cat_name}):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
-
-    if data.startswith("mgr_del_cat_"):
-        cat_name = data.replace("mgr_del_cat_", "")
-        await db.library.delete_many({"category": {"$regex": f"^{cat_name}"}})
-        await db.questions.delete_many({"category": {"$regex": f"^{cat_name}"}})
-        clear_cache()
-        return await query.edit_message_text(f"✅ تم حذف السلسلة ({cat_name}) بالكامل!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin_content_mgr")]]))
-
-    if data.startswith("mgr_les_"):
-        doc_id = data.replace("mgr_les_", "")
-        doc = await db.library.find_one({"_id": ObjectId(doc_id)})
-        if not doc: return await query.answer("الدرس غير موجود", show_alert=True)
-        les_name = doc["lesson"]
-        cat_name = doc["category"]
-        
-        await db.users.update_one({"_id": user_id}, {"$set": {"temp_data": {"mgr_target_cat": cat_name, "mgr_target_les": les_name}}})
-        
-        btns = [
-            [InlineKeyboardButton("✏️ | تعديل اسم الدرس", callback_data="mgr_action_edit_les")],
-            [InlineKeyboardButton("🗑️ | حذف الدرس", callback_data="mgr_action_del_les")],
-            [InlineKeyboardButton("🔙 | رجوع لدروس السلسلة", callback_data=f"mgr_cat_view_{cat_name[:40]}")]
-        ]
-        return await query.edit_message_text(f"📖 الدرس: **{les_name}**\nماذا تريد أن تفعل؟", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
-
-    if data == "mgr_action_edit_les":
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_MGR_EDIT_LES"}})
-        les = user.get("temp_data", {}).get("mgr_target_les")
-        return await query.edit_message_text(f"✍️ أرسل **الاسم الجديد** للدرس بدلاً من ({les}):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
-
-    if data == "mgr_action_del_les":
-        cat = user.get("temp_data", {}).get("mgr_target_cat")
-        les = user.get("temp_data", {}).get("mgr_target_les")
-        await db.library.delete_many({"category": cat, "lesson": les})
-        await db.questions.delete_many({"category": cat, "lesson": les})
-        clear_cache()
-        return await query.edit_message_text(f"✅ تم حذف الدرس ({les}) بالكامل!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"mgr_cat_view_{cat[:40]}")]]))
-
-    # ================= 🌟 الأزرار الأساسية 🌟 =================
+    # ================= 🌟 الأزرار التي كانت مفقودة 🌟 =================
     if data == "admin_cancel":
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "last_msg_id": None}}, upsert=True)
         await query.message.delete()
@@ -840,8 +679,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not adm: return
         await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
         btns = []
-        if await has_perm(user_id, "upload"):
-            btns.append([InlineKeyboardButton("📂 | إدارة السلاسل والدروس", callback_data="admin_content_mgr")])
         if await has_perm(user_id, "publish"):
             btns.append([InlineKeyboardButton("📢 | قسم النشر والقوالب", callback_data="admin_publishing_hub")])
             btns.append([InlineKeyboardButton("🎛️ | إدارة أنواع المحتوى", callback_data="admin_content_types")])
@@ -907,7 +744,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "import_confirm":
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_EXCEL"}}, upsert=True)
-        return await query.edit_message_text("📥 **الاستيراد الذكي (Excel)**\n\nأرسل ملف الإكسل الآن (`.xlsx`).\nسيقوم البوت بإضافة الدروس الجديدة وتحديث القديمة دون مسح بياناتك.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
+        return await query.edit_message_text("📥 **أرسل ملف الإكسل (.xlsx) الآن...**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
 
     if data.startswith("cat_"):
         cat_name = data.replace("cat_", "")
@@ -922,7 +759,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("les_"):
         return await show_lesson_ui(context, chat_id, data.replace("les_", ""), message_id=query.message.message_id, user_id=user_id)
 
-    # ================= باقي الدوال والأزرار (القوالب والنشر وأنواع المحتوى) =================
+    # ================= باقي الأزرار =================
     if data == "admin_content_types" and await has_perm(user_id, "publish"):
         types = await db.content_types.find({}).to_list(length=None)
         btns = []
@@ -1057,14 +894,13 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = await db.users.find_one({"_id": user_id})
         temp_data = user.get("temp_data", {})
         temp_data["pub_les"] = lesson_name
-        
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": temp_data}})
         
         templates = await db.templates.find({}).to_list(length=None)
         btns = []
         for t in templates:
             btns.append([InlineKeyboardButton(f"📄 | {t['name']}", callback_data=f"pubfmt_tpl_{str(t['_id'])}")])
-        btns.append([InlineKeyboardButton("📝 | قالب النص الكلاسيكي (تلقائي المسميات)", callback_data="pubfmt_text")])
+        btns.append([InlineKeyboardButton("📝 | قالب النص الكلاسيكي", callback_data="pubfmt_text")])
         btns.append([InlineKeyboardButton("🔲 | قالب الأزرار الشفافة", callback_data="pubfmt_btns")])
         btns.append([InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")])
         
@@ -1136,17 +972,14 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe_cat = html.escape(cat)
             safe_les = html.escape(les)
             draft_text = f"<b>{safe_cat} - {safe_les}</b>\n\nدرس اليوم {date_txt}\n\n"
-            
             for t_name, t_link in dynamic_links.items():
                 if t_link != ch_link: 
                     draft_text += f"<blockquote>{t_name} <a href='{t_link}'>إضغط هنا</a> ❞</blockquote>\n"
-                    
             draft_text += f"\n\n{html.escape(footer_content)}"
             temp_data["draft_format"] = "html_text"
             temp_data["draft_text"] = draft_text
             await db.users.update_one({"_id": user_id}, {"$set": {"temp_data": temp_data}})
             btns = [[InlineKeyboardButton("✅ | المتابعة لاختيار القناة", callback_data="pub_select_chan")], [InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")]]
-            
             preview_text = f"📝 <b>معاينة المسودة:</b>\n\n{media_note.replace('`','')}{draft_text}\n\n--- \nهل تريد المتابعة؟"
             return await query.edit_message_text(preview_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(btns), disable_web_page_preview=True)
 
@@ -1337,9 +1170,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 يجب أن يحتوي الملف على الأعمدة التالية كحد أدنى:
 1. `سؤال`
 2. `صحيح` (للإجابة الصحيحة)
-3. `خاطئة` أو `خطأ` (يمكن تكرار العمود للخيارات المتعددة)
-
-*ملاحظة:* إذا أردت حذف سؤال معين، اكتب كلمة `حذف` في عمود `صحيح`."""
+3. `خاطئة` أو `خطأ` (يمكن تكرار العمود للخيارات المتعددة)"""
         return await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel")]]))
 
     if data.startswith("quizles_"):

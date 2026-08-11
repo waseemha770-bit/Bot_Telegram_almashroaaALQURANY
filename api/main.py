@@ -395,7 +395,7 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "UPLOADING", "temp_data": {"file_id": final_link, "telegram_file_id": telegram_file_id}, "last_msg_id": sent_msg.message_id}}, upsert=True)
 
 # ==========================================
-# معالجة الرسائل النصية
+# معالجة الرسائل النصية والمدخلات
 # ==========================================
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -463,11 +463,19 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == '📥 استيراد إكسل' and await has_perm(user_id, "upload"):
-        await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
-        btns = [[InlineKeyboardButton("✅ نعم، متأكد", callback_data="import_confirm")], [InlineKeyboardButton("❌ الإلغاء", callback_data="admin_cancel")]]
-        
+        await db.users.update_one({"_id": user_id}, {"$set": {"state": "WAIT_EXCEL", "temp_data": {}}})
+        msg = """📥 **الاستيراد والإدارة عبر الإكسل**
+يمكنك إدارة المنصة بالكامل عبر الإكسل!
+
+1️⃣ **لإضافة محتوى/روابط:** الأعمدة: `السلسلة`, `الدرس`, `النوع`, `الرابط`.
+2️⃣ **لإضافة أسئلة:** الأعمدة: `السلسلة`, `الدرس`, `السؤال`, `صحيح`, `خطأ`.
+3️⃣ **لإدارة هيكل المنصة (السلاسل والدروس):**
+الأعمدة: `الإجراء` | `السلسلة` | `الدرس` | `السلسلة الجديدة` | `الدرس الجديد`
+*(في عمود الإجراء اكتب: إضافة، تعديل، أو حذف).*
+
+👇 **أرسل ملف الإكسل الآن...**"""
         await clean_chat_history(user_id, chat_id, context)
-        sent_msg = await update.message.reply_text("⚠️ سيتم مسح البيانات القديمة بالكامل.\nهل أنت متأكد من رغبتك بالاستمرار؟", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+        sent_msg = await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ الإلغاء", callback_data="admin_cancel")]]))
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
@@ -503,8 +511,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
         clear_cache()
         await clean_chat_history(user_id, chat_id, context)
-        btns = [[InlineKeyboardButton("🔙 | العودة", callback_data="admin_content_mgr")]]
-        sent_msg = await update.message.reply_text(f"✅ تم إضافة السلسلة ({new_cat}) بنجاح!", reply_markup=InlineKeyboardMarkup(btns))
+        btns = [[InlineKeyboardButton("🔙 | العودة لمدير المحتوى", callback_data="admin_content_mgr")]]
+        sent_msg = await update.message.reply_text(f"✅ تم إضافة السلسلة الجديدة: (**{new_cat}**) بنجاح!", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
@@ -517,8 +525,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
         clear_cache()
         await clean_chat_history(user_id, chat_id, context)
-        btns = [[InlineKeyboardButton("🔙 | العودة", callback_data="admin_content_mgr")]]
-        sent_msg = await update.message.reply_text(f"✅ تم تعديل اسم السلسلة إلى ({new_cat}) بنجاح!", reply_markup=InlineKeyboardMarkup(btns))
+        btns = [[InlineKeyboardButton("🔙 | العودة لمدير المحتوى", callback_data="admin_content_mgr")]]
+        sent_msg = await update.message.reply_text(f"✅ تمت العملية!\nتم تحديث اسم السلسلة من ({old_cat}) إلى (**{new_cat}**) وتعديل كافة الدروس والأسئلة المرتبطة بها.", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
@@ -529,8 +537,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
         clear_cache()
         await clean_chat_history(user_id, chat_id, context)
-        btns = [[InlineKeyboardButton("🔙 | العودة", callback_data=f"mgr_cat_view_{target_cat[:40]}")]]
-        sent_msg = await update.message.reply_text(f"✅ تم إضافة الدرس ({new_les}) بنجاح!", reply_markup=InlineKeyboardMarkup(btns))
+        btns = [[InlineKeyboardButton("🔙 | العودة للسلسلة", callback_data=f"mgr_cat_view_{target_cat[:40]}")]]
+        sent_msg = await update.message.reply_text(f"✅ تم إنشاء الدرس الجديد: (**{new_les}**) بنجاح!", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
@@ -544,8 +552,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}})
         clear_cache()
         await clean_chat_history(user_id, chat_id, context)
-        btns = [[InlineKeyboardButton("🔙 | العودة", callback_data=f"mgr_cat_view_{target_cat[:40]}")]]
-        sent_msg = await update.message.reply_text(f"✅ تم تعديل اسم الدرس إلى ({new_les}) بنجاح!", reply_markup=InlineKeyboardMarkup(btns))
+        btns = [[InlineKeyboardButton("🔙 | العودة للسلسلة", callback_data=f"mgr_cat_view_{target_cat[:40]}")]]
+        sent_msg = await update.message.reply_text(f"✅ تمت العملية!\nتم تعديل اسم الدرس من ({old_les}) إلى (**{new_les}**) وتحديث الروابط والأسئلة المرتبطة به.", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
         await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
         return
 
@@ -697,7 +705,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.users.update_one({"_id": user_id}, {"$set": {"last_msg_id": sent_msg.message_id}})
 
 # ==========================================
-# معالجة تفاعلات الأزرار القوية والمعزولة
+# معالجة تفاعلات الأزرار المعزولة بالكامل
 # ==========================================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -716,7 +724,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "ignore": return 
     user = await db.users.find_one({"_id": user_id})
 
-    # ================= 🌟 الأزرار الأساسية للإلغاء والعودة 🌟 =================
     if data == "admin_cancel":
         await db.users.update_one({"_id": user_id}, {"$set": {"state": "", "temp_data": {}}}, upsert=True)
         try: await query.edit_message_text("✅ **تم إلغاء العملية.**", parse_mode="Markdown", reply_markup=None)
@@ -744,7 +751,38 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
         return
 
-    # ================= 🌟 إدارة المحتوى السلاسل والدروس المباشر 🌟 =================
+    # ================= 🌟 رسائل التأكيد والتحذير (Two-Step Verification) 🌟 =================
+
+    # 1. تأكيد حذف أنواع المحتوى
+    if data.startswith("ask_deltype_"):
+        t_id = data.replace("ask_deltype_", "")
+        btns = [
+            [InlineKeyboardButton("✅ نعم، احذف نهائياً", callback_data=f"deltype_{t_id}")],
+            [InlineKeyboardButton("❌ تراجع", callback_data="admin_content_types")]
+        ]
+        return await query.edit_message_text("⚠️ **تنبيه:**\nهل أنت متأكد من رغبتك في حذف هذا النوع؟\nلا يمكن التراجع عن هذه الخطوة ولن يظهر هذا الزر مجدداً للطلاب.", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+
+    # 2. تأكيد حذف السلسلة
+    if data.startswith("ask_del_cat_"):
+        cat_name = data.replace("ask_del_cat_", "")
+        btns = [
+            [InlineKeyboardButton("✅ نعم، احذف السلسلة بالكامل", callback_data=f"mgr_del_cat_{cat_name}")],
+            [InlineKeyboardButton("❌ تراجع", callback_data=f"mgr_cat_view_{cat_name}")]
+        ]
+        return await query.edit_message_text(f"⚠️ **تحذير خطير:**\nهل أنت متأكد من حذف السلسلة (**{cat_name}**)؟\n\n*سيتم مسح جميع الدروس والأسئلة المرتبطة بها نهائياً ولن تتمكن من استعادتها!*", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+
+    # 3. تأكيد حذف الدرس
+    if data == "ask_del_les":
+        cat = user.get("temp_data", {}).get("mgr_target_cat")
+        les = user.get("temp_data", {}).get("mgr_target_les")
+        btns = [
+            [InlineKeyboardButton("✅ نعم، احذف الدرس نهائياً", callback_data="mgr_action_del_les")],
+            [InlineKeyboardButton("❌ تراجع", callback_data=f"mgr_cat_view_{cat[:40]}")]
+        ]
+        return await query.edit_message_text(f"⚠️ **تنبيه:**\nهل أنت متأكد من حذف الدرس (**{les}**)؟\n\n*سيتم مسح جميع روابطه وأسئلته من قاعدة البيانات!*", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+
+    # ======================================================================================
+
     if data == "admin_content_mgr" and await has_perm(user_id, "upload"):
         await db.users.update_one({"_id": user_id}, {"$set": {"state": ""}})
         if "categories" not in GLOBAL_CACHE: 
@@ -772,7 +810,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         btns = [[InlineKeyboardButton(f"📖 | {idx}- {les['_id']}", callback_data=f"mgr_les_{str(les['doc_id'])}")] for idx, les in enumerate(lessons, 1)]
         btns.append([InlineKeyboardButton("➕ | إضافة درس جديد", callback_data=f"mgr_add_les_{cat_name[:40]}")])
         btns.append([InlineKeyboardButton("✏️ | تعديل اسم السلسلة", callback_data=f"mgr_edit_cat_{cat_name[:40]}")])
-        btns.append([InlineKeyboardButton("🗑️ | حذف السلسلة (خطير)", callback_data=f"mgr_del_cat_{cat_name[:40]}")])
+        btns.append([InlineKeyboardButton("🗑️ | حذف السلسلة (خطير)", callback_data=f"ask_del_cat_{cat_name[:40]}")]) # توجيه لشاشة التحذير
         btns.append([InlineKeyboardButton("🔙 | رجوع للسلاسل", callback_data="admin_content_mgr")])
         try: await query.edit_message_text(f"📁 السلسلة: **{cat_name}**\nيمكنك إضافة دروس جديدة أو التعديل:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
         except: pass
@@ -812,7 +850,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         btns = [
             [InlineKeyboardButton("✏️ | تعديل اسم الدرس", callback_data="mgr_action_edit_les")],
-            [InlineKeyboardButton("🗑️ | حذف الدرس", callback_data="mgr_action_del_les")],
+            [InlineKeyboardButton("🗑️ | حذف الدرس", callback_data="ask_del_les")], # توجيه لشاشة التحذير
             [InlineKeyboardButton("🔙 | رجوع لدروس السلسلة", callback_data=f"mgr_cat_view_{cat_name[:40]}")]
         ]
         try: await query.edit_message_text(f"📖 الدرس: **{les_name}**\nماذا تريد أن تفعل؟", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
@@ -843,7 +881,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             btns.append([
                 InlineKeyboardButton(f"{t['icon']} {t['name']}", callback_data="ignore"),
                 InlineKeyboardButton("✏️ تعديل", callback_data=f"editype_{t['_id']}"),
-                InlineKeyboardButton("🗑️ حذف", callback_data=f"deltype_{t['_id']}")
+                InlineKeyboardButton("🗑️ حذف", callback_data=f"ask_deltype_{t['_id']}") # توجيه لشاشة التحذير
             ])
         btns.append([InlineKeyboardButton("➕ | إضافة نوع جديد", callback_data="add_type")])
         btns.append([InlineKeyboardButton("🔙 | رجوع للوحة", callback_data="admin_menu")])
@@ -977,9 +1015,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         btns = []
         for t in templates:
             btns.append([InlineKeyboardButton(f"📄 | {t['name']}", callback_data=f"pubfmt_tpl_{str(t['_id'])}")])
-        btns.append([InlineKeyboardButton("📝 | قالب النص الكلاسيكي", callback_data="pubfmt_text")])
+        btns.append([InlineKeyboardButton("📝 | قالب النص الكلاسيكي (تلقائي المسميات)", callback_data="pubfmt_text")])
         btns.append([InlineKeyboardButton("🔲 | قالب الأزرار الشفافة", callback_data="pubfmt_btns")])
-        btns.append([InlineKeyboardButton("❌ | إلغاء", callback_data="admin_cancel")])
+        btns.append([InlineKeyboardButton("❌ | إلغاء العملية", callback_data="admin_cancel")])
         
         return await query.edit_message_text(f"✅ تم اختيار: **{lesson_name}**\n\nاختر القالب الذي تفضله لتوليد المنشور:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
 
